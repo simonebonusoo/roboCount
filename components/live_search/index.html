@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        overflow: hidden;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      .search-shell {
+        width: 100%;
+        height: 24px;
+        display: flex;
+        align-items: center;
+      }
+
+      input {
+        width: 100%;
+        height: 20px;
+        border: none;
+        outline: none;
+        background: transparent;
+        color: #2e261f;
+        font-size: 12px;
+        line-height: 1;
+        padding: 0;
+        margin: 0;
+        box-shadow: none;
+      }
+
+      input::placeholder {
+        color: rgba(79, 67, 57, 0.58);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="search-shell">
+      <input id="search" type="text" autocomplete="off" autofocus />
+    </div>
+    <script>
+      const input = document.getElementById("search");
+      let initialized = false;
+      let focusTimer = null;
+      const RESET_SIGNAL = "__expense_search_reset__";
+      const CONFIRM_PREFIX = "__expense_search_confirm__::";
+      let suppressOutsideResetUntil = 0;
+
+      function post(type, payload = {}) {
+        window.parent.postMessage(
+          { isStreamlitMessage: true, type, ...payload },
+          "*",
+        );
+      }
+
+      function setValue(nextValue) {
+        post("streamlit:setComponentValue", {
+          value: nextValue,
+          dataType: "json",
+        });
+      }
+
+      function closeSearchAfterConfirm() {
+        try {
+          const parentDocument = window.parent.document;
+          const targets = [parentDocument.body, parentDocument.documentElement, parentDocument];
+
+          targets.forEach((target) => {
+            if (!target || !target.dispatchEvent) {
+              return;
+            }
+            target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window.parent }));
+            target.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window.parent }));
+            target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window.parent }));
+          });
+        } catch (error) {
+          // If the parent click can't be simulated, keep the filtered state active.
+        }
+      }
+
+      function resetSearchFromOutsideClick() {
+        if (Date.now() < suppressOutsideResetUntil) {
+          return;
+        }
+        if (!input.value) {
+          return;
+        }
+        input.value = "";
+        setValue(RESET_SIGNAL);
+      }
+
+      function placeCaretAtEnd() {
+        const end = input.value.length;
+        try {
+          input.setSelectionRange(end, end);
+        } catch (error) {
+          // Ignore selection errors on transient mounts.
+        }
+      }
+
+      function ensureFocus(attempt = 0) {
+        if (focusTimer) {
+          clearTimeout(focusTimer);
+          focusTimer = null;
+        }
+
+        try {
+          window.focus();
+        } catch (error) {
+          // Ignore browser focus restrictions.
+        }
+
+        try {
+          input.focus({ preventScroll: true });
+        } catch (error) {
+          input.focus();
+        }
+        placeCaretAtEnd();
+
+        if (document.activeElement !== input && attempt < 8) {
+          focusTimer = window.setTimeout(() => ensureFocus(attempt + 1), 35 * (attempt + 1));
+        }
+      }
+
+      function applyRender(args) {
+        const nextValue = typeof args.value === "string" ? args.value : "";
+        const placeholder = typeof args.placeholder === "string" ? args.placeholder : "";
+
+        input.placeholder = placeholder;
+        if (document.activeElement !== input && input.value !== nextValue) {
+          input.value = nextValue;
+        }
+
+        requestAnimationFrame(() => {
+          ensureFocus();
+          post("streamlit:setFrameHeight", { height: 24 });
+        });
+      }
+
+      window.addEventListener("message", (event) => {
+        const message = event.data;
+        if (!message || !message.isStreamlitMessage || message.type !== "streamlit:render") {
+          return;
+        }
+        applyRender(message.args || {});
+      });
+
+      input.addEventListener("input", (event) => {
+        setValue(event.target.value);
+      });
+
+      input.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") {
+          return;
+        }
+
+        // Enter confirms the current query and closes the search UI
+        // without resetting the applied filter.
+        event.preventDefault();
+        event.stopPropagation();
+        suppressOutsideResetUntil = Date.now() + 500;
+        setValue(`${CONFIRM_PREFIX}${input.value}`);
+
+        requestAnimationFrame(() => {
+          closeSearchAfterConfirm();
+        });
+      });
+
+      try {
+        const parentDocument = window.parent.document;
+        const outsidePointerHandler = () => {
+          resetSearchFromOutsideClick();
+        };
+        parentDocument.addEventListener("pointerdown", outsidePointerHandler, true);
+        window.addEventListener("beforeunload", () => {
+          parentDocument.removeEventListener("pointerdown", outsidePointerHandler, true);
+        });
+      } catch (error) {
+        // Ignore access restrictions if the parent document is not reachable.
+      }
+
+      if (!initialized) {
+        initialized = true;
+        post("streamlit:componentReady", { apiVersion: 1 });
+        post("streamlit:setFrameHeight", { height: 24 });
+        requestAnimationFrame(() => ensureFocus());
+      }
+    </script>
+  </body>
+</html>
