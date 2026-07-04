@@ -27,6 +27,7 @@ import re
 
 import psycopg
 from psycopg.rows import tuple_row
+from psycopg_pool import ConnectionPool
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
@@ -121,8 +122,16 @@ class _Cursor:
 class Connection:
     """Avvolge una connessione psycopg replicando l'interfaccia di sqlite3."""
 
-    def __init__(self, raw):
+    def __init__(self, raw, pool=None):
         self.raw = raw
+        self._pool = pool
+
+    def _release(self):
+        # Restituisce la connessione al pool (o la chiude se non c'e pool).
+        if self._pool is not None:
+            self._pool.putconn(self.raw)
+        else:
+            self.raw.close()
 
     def execute(self, sql, params=None):
         cursor = self.raw.cursor()
@@ -146,7 +155,7 @@ class Connection:
         self.raw.rollback()
 
     def close(self):
-        self.raw.close()
+        self._release()
 
     def __enter__(self):
         return self
@@ -158,26 +167,48 @@ class Connection:
             else:
                 self.raw.rollback()
         finally:
-            self.raw.close()
+            self._release()
         return False
 
 
-def get_connection() -> Connection:
-    """Apre una nuova connessione PostgreSQL con accesso ai campi per nome."""
-    if not DATABASE_URL:
-        raise RuntimeError(
-            "DATABASE_URL non impostata. Configura la stringa di connessione "
-            "PostgreSQL di Supabase nella variabile d'ambiente DATABASE_URL."
+# ---------------------------------------------------------------------------
+# Pool di connessioni: riusa le connessioni invece di aprirne una nuova (con
+# handshake TLS) a ogni query. Fondamentale per la latenza, specie con molte
+# query per richiesta.
+# ---------------------------------------------------------------------------
+_pool: ConnectionPool | None = None
+
+
+def _get_pool() -> ConnectionPool:
+    global _pool
+    if _pool is None:
+        if not DATABASE_URL:
+            raise RuntimeError(
+                "DATABASE_URL non impostata. Configura la stringa di connessione "
+                "PostgreSQL di Supabase nella variabile d'ambiente DATABASE_URL."
+            )
+        _pool = ConnectionPool(
+            conninfo=DATABASE_URL,
+            min_size=1,
+            max_size=8,
+            max_idle=60,
+            kwargs={
+                "row_factory": _row_factory,
+                "autocommit": False,
+                # Compatibile col pooler (pgbouncer) di Supabase in modalita
+                # transaction: niente prepared statement.
+                "prepare_threshold": None,
+            },
+            open=True,
         )
-    raw = psycopg.connect(
-        DATABASE_URL,
-        row_factory=_row_factory,
-        autocommit=False,
-        # Disabilita i prepared statement: compatibile col pooler (pgbouncer)
-        # di Supabase in modalita transaction.
-        prepare_threshold=None,
-    )
-    return Connection(raw)
+    return _pool
+
+
+def get_connection() -> Connection:
+    """Preleva una connessione dal pool (accesso ai campi per nome)."""
+    pool = _get_pool()
+    raw = pool.getconn()
+    return Connection(raw, pool)
 
 
 # ---------------------------------------------------------------------------
