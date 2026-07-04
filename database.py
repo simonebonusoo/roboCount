@@ -26,6 +26,7 @@ import os
 import re
 
 import psycopg
+from psycopg.rows import tuple_row
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
@@ -79,6 +80,15 @@ class _Cursor:
         self._cursor = cursor
         self._connection = connection
 
+    def execute(self, sql, params=None):
+        # Necessario per pandas.read_sql_query, che chiama cursor.execute().
+        self._cursor.execute(_translate(sql), tuple(params) if params else None)
+        return self
+
+    def executemany(self, sql, seq_of_params):
+        self._cursor.executemany(_translate(sql), [tuple(p) for p in seq_of_params])
+        return self
+
     def fetchone(self):
         return self._cursor.fetchone()
 
@@ -89,8 +99,15 @@ class _Cursor:
         return iter(self._cursor)
 
     @property
+    def description(self):
+        return self._cursor.description
+
+    @property
     def rowcount(self):
         return self._cursor.rowcount
+
+    def close(self):
+        self._cursor.close()
 
     @property
     def lastrowid(self):
@@ -118,7 +135,9 @@ class Connection:
         return _Cursor(cursor, self)
 
     def cursor(self):
-        return _Cursor(self.raw.cursor(), self)
+        # Usato solo da pandas.read_sql_query, che si aspetta righe come tuple
+        # semplici (non le nostre righe con accesso per nome).
+        return _Cursor(self.raw.cursor(row_factory=tuple_row), self)
 
     def commit(self):
         self.raw.commit()
