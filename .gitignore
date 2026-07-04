@@ -1,0 +1,17 @@
+# Node / frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Dati e segreti locali
+data/spese.db
+.streamlit/secrets.toml
+
+# Sistema
+.DS_Store

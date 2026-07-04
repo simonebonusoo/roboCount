@@ -11,7 +11,15 @@ import { ExpensesPage } from "./pages/ExpensesPage";
 import { IncomesPage } from "./pages/IncomesPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { CoupleBalancePage } from "./pages/CoupleBalancePage";
+import { SavingsPage } from "./pages/SavingsPage";
+import { ReportPage } from "./pages/ReportPage";
+import { AdminUsersPage } from "./pages/AdminUsersPage";
 import "./styles.css";
+import { applyTheme, getStoredTheme } from "./hooks/useThemePreference";
+
+if (typeof window !== "undefined") {
+  applyTheme(getStoredTheme());
+}
 
 function App() {
   return (
@@ -34,7 +42,10 @@ function App() {
             <Route path="couple-balance" element={<CoupleBalancePage />} />
             <Route path="expenses" element={<ExpensesPage />} />
             <Route path="incomes" element={<IncomesPage />} />
+            <Route path="risparmi" element={<SavingsPage />} />
+            <Route path="report" element={<ReportPage />} />
             <Route path="profile" element={<ProfilePage />} />
+            <Route path="admin/users" element={<AdminUsersPage />} />
           </Route>
         </Routes>
       </AuthProvider>

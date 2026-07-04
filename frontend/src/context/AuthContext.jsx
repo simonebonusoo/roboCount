@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../lib/api";
+import { api, subscribeAuthExpired } from "../lib/api";
 
 const AuthContext = createContext(null);
 
@@ -41,6 +41,13 @@ export function AuthProvider({ children }) {
     };
   }, []);
 
+  useEffect(() => subscribeAuthExpired(() => {
+    authRevisionRef.current += 1;
+    setUser(null);
+    setIsAuthenticated(false);
+    setIsLoading(false);
+  }), []);
+
   async function login(credentials) {
     authRevisionRef.current += 1;
     const requestRevision = authRevisionRef.current;
@@ -48,6 +55,33 @@ export function AuthProvider({ children }) {
 
     try {
       await api.post("/api/auth/login", credentials);
+      const response = await api.get("/api/auth/me");
+      if (requestRevision !== authRevisionRef.current) {
+        return response.user;
+      }
+      setUser(response.user);
+      setIsAuthenticated(true);
+      return response.user;
+    } catch (error) {
+      if (requestRevision === authRevisionRef.current) {
+        setUser(null);
+        setIsAuthenticated(false);
+      }
+      throw error;
+    } finally {
+      if (requestRevision === authRevisionRef.current) {
+        setIsLoading(false);
+      }
+    }
+  }
+
+  async function register(payload) {
+    authRevisionRef.current += 1;
+    const requestRevision = authRevisionRef.current;
+    setIsLoading(true);
+
+    try {
+      await api.post("/api/auth/register", payload);
       const response = await api.get("/api/auth/me");
       if (requestRevision !== authRevisionRef.current) {
         return response.user;
@@ -84,6 +118,13 @@ export function AuthProvider({ children }) {
     }
   }
 
+  function clearAuthState() {
+    authRevisionRef.current += 1;
+    setUser(null);
+    setIsAuthenticated(false);
+    setIsLoading(false);
+  }
+
   async function refreshUser() {
     authRevisionRef.current += 1;
     const requestRevision = authRevisionRef.current;
@@ -102,8 +143,10 @@ export function AuthProvider({ children }) {
       isLoading,
       isAuthenticated,
       login,
-      logout,
+      register,
       refreshUser,
+      logout,
+      clearAuthState,
       setUser,
     }),
     [user, isLoading, isAuthenticated],
