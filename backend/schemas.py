@@ -11,10 +11,34 @@ class LoginRequest(BaseModel):
     password: str = ""
 
 
+class RegisterRequest(BaseModel):
+    full_name: str
+    username: str
+    email: str = ""
+    password: str
+    account_type: Literal["personal", "couple"] = "couple"
+    partner_invite: str = ""
+    avatar_id: str = "1"
+
+
+class AvatarUpdateRequest(BaseModel):
+    avatar_id: str = "1"
+
+
 class ProfileUpdateRequest(BaseModel):
     full_name: str
     username: str
     email: str = ""
+    new_password: str = ""
+
+
+class AdminUserUpdateRequest(BaseModel):
+    full_name: str
+    username: str
+    email: str = ""
+    account_type: Literal["personal", "couple"] = "couple"
+    partner_invite: str = ""
+    is_admin: bool = False
     new_password: str = ""
 
 
@@ -43,6 +67,19 @@ class SettledPayload(BaseModel):
 
 class CategoryPayload(BaseModel):
     name: str
+    month_label: str = ""
+    color: str = ""
+    icon: str = ""
+
+
+class CategoryUpdatePayload(BaseModel):
+    name: str
+    color: str = ""
+    icon: str = ""
+
+
+class CategoryDeletePayload(BaseModel):
+    destination_category: str = ""
 
 
 class BulkDeletePayload(BaseModel):

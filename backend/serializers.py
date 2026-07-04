@@ -15,6 +15,11 @@ def serialize_user(user: dict | None) -> dict | None:
         "full_name": user.get("full_name", ""),
         "username": user.get("username", ""),
         "email": user.get("email", ""),
+        "is_admin": bool(user.get("is_admin", False)),
+        "account_type": user.get("account_type", "couple") or "couple",
+        "partner_invite": user.get("partner_invite", "") or "",
+        "couple_id": user.get("couple_id", "") or "",
+        "avatar_id": str(user.get("avatar_id", "1") or "1"),
     }
 
 
@@ -124,4 +129,3 @@ def _format_value(value: object) -> object:
     if isinstance(value, date):
         return value.isoformat()
     return value
-

@@ -1,349 +1,311 @@
+"""
+Strato dati di Monitor Spese su PostgreSQL (Supabase).
+
+Storicamente l'app usava SQLite. Per ottenere un database persistente e
+gratuito in produzione siamo passati a PostgreSQL (Supabase), MA senza
+riscrivere le ~146 query sparse in services.py: questo modulo fa da
+"adattatore".
+
+get_connection() restituisce un oggetto che espone la stessa interfaccia di
+sqlite3 usata dal resto del codice:
+  - connection.execute("... ?", (a, b))   -> i placeholder '?' vengono
+    tradotti nei '%s' di psycopg;
+  - le righe sono accessibili per nome (row["colonna"]) e per indice (row[0]);
+  - cursor.lastrowid funziona (via SELECT lastval());
+  - "with get_connection() as c:" fa commit in uscita (rollback in caso di
+    errore) e chiude la connessione.
+
+La connessione viene letta dalla variabile d'ambiente DATABASE_URL (stringa
+di connessione PostgreSQL di Supabase, meglio il pooler in modalita
+transaction, porta 6543).
+"""
+
 from __future__ import annotations
 
-import hashlib
-import sqlite3
-from pathlib import Path
+import os
+import re
+
+import psycopg
+from psycopg.rows import tuple_row
 
 
-BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-DB_PATH = DATA_DIR / "spese.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 
-def get_connection() -> sqlite3.Connection:
-    """Restituisce una connessione SQLite con accesso ai campi per nome."""
-    DATA_DIR.mkdir(exist_ok=True)
-    connection = sqlite3.connect(DB_PATH)
-    connection.row_factory = sqlite3.Row
-    return connection
+# ---------------------------------------------------------------------------
+# Riga compatibile con sqlite3.Row: accesso per nome E per indice numerico.
+# ---------------------------------------------------------------------------
+class Row(dict):
+    def __init__(self, columns, values):
+        super().__init__(zip(columns, values))
+        self._values = tuple(values)
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._values[key]
+        return dict.__getitem__(self, key)
+
+
+def _row_factory(cursor):
+    columns = [col.name for col in cursor.description] if cursor.description else []
+
+    def make(values):
+        return Row(columns, values)
+
+    return make
+
+
+# ---------------------------------------------------------------------------
+# Traduzione dal dialetto SQLite a PostgreSQL.
+# Nel codice non ci sono '%' o 'LIKE' nelle query, ne '?' dentro le stringhe:
+# la sostituzione '?' -> '%s' e quindi sicura (verificato).
+# ---------------------------------------------------------------------------
+_INSERT_OR_IGNORE_RE = re.compile(r"INSERT\s+OR\s+IGNORE\s+INTO", re.IGNORECASE)
+
+
+def _translate(sql: str) -> str:
+    translated = sql
+    if _INSERT_OR_IGNORE_RE.search(translated):
+        # SQLite: "INSERT OR IGNORE" -> PostgreSQL: "INSERT ... ON CONFLICT DO NOTHING"
+        translated = _INSERT_OR_IGNORE_RE.sub("INSERT INTO", translated)
+        translated = translated.rstrip().rstrip(";")
+        translated = translated + "\nON CONFLICT DO NOTHING"
+    return translated.replace("?", "%s")
+
+
+class _Cursor:
+    """Avvolge un cursore psycopg per offrire l'API usata dal codice SQLite."""
+
+    def __init__(self, cursor, connection):
+        self._cursor = cursor
+        self._connection = connection
+
+    def execute(self, sql, params=None):
+        # Necessario per pandas.read_sql_query, che chiama cursor.execute().
+        self._cursor.execute(_translate(sql), tuple(params) if params else None)
+        return self
+
+    def executemany(self, sql, seq_of_params):
+        self._cursor.executemany(_translate(sql), [tuple(p) for p in seq_of_params])
+        return self
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+    def __iter__(self):
+        return iter(self._cursor)
+
+    @property
+    def description(self):
+        return self._cursor.description
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+    def close(self):
+        self._cursor.close()
+
+    @property
+    def lastrowid(self):
+        # Equivalente di sqlite3 cursor.lastrowid: l'ultimo valore di sequenza
+        # generato nella sessione corrente (stessa transazione dell'INSERT).
+        with self._connection.raw.cursor() as helper:
+            helper.execute("SELECT lastval()")
+            return helper.fetchone()[0]
+
+
+class Connection:
+    """Avvolge una connessione psycopg replicando l'interfaccia di sqlite3."""
+
+    def __init__(self, raw):
+        self.raw = raw
+
+    def execute(self, sql, params=None):
+        cursor = self.raw.cursor()
+        cursor.execute(_translate(sql), tuple(params) if params else None)
+        return _Cursor(cursor, self)
+
+    def executemany(self, sql, seq_of_params):
+        cursor = self.raw.cursor()
+        cursor.executemany(_translate(sql), [tuple(p) for p in seq_of_params])
+        return _Cursor(cursor, self)
+
+    def cursor(self):
+        # Usato solo da pandas.read_sql_query, che si aspetta righe come tuple
+        # semplici (non le nostre righe con accesso per nome).
+        return _Cursor(self.raw.cursor(row_factory=tuple_row), self)
+
+    def commit(self):
+        self.raw.commit()
+
+    def rollback(self):
+        self.raw.rollback()
+
+    def close(self):
+        self.raw.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if exc_type is None:
+                self.raw.commit()
+            else:
+                self.raw.rollback()
+        finally:
+            self.raw.close()
+        return False
+
+
+def get_connection() -> Connection:
+    """Apre una nuova connessione PostgreSQL con accesso ai campi per nome."""
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL non impostata. Configura la stringa di connessione "
+            "PostgreSQL di Supabase nella variabile d'ambiente DATABASE_URL."
+        )
+    raw = psycopg.connect(
+        DATABASE_URL,
+        row_factory=_row_factory,
+        autocommit=False,
+        # Disabilita i prepared statement: compatibile col pooler (pgbouncer)
+        # di Supabase in modalita transaction.
+        prepare_threshold=None,
+    )
+    return Connection(raw)
+
+
+# ---------------------------------------------------------------------------
+# Schema (idempotente). Rispecchia lo schema SQLite con tipi PostgreSQL
+# compatibili: booleani come integer (0/1), date come text, niente vincoli di
+# foreign key (come SQLite di default), cosi il resto del codice non cambia.
+# ---------------------------------------------------------------------------
+_TS_DEFAULT = "to_char((now() at time zone 'utc'), 'YYYY-MM-DD HH24:MI:SS')"
+
+_SCHEMA_STATEMENTS = [
+    f"""
+    CREATE TABLE IF NOT EXISTS categories (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        created_at TEXT DEFAULT {_TS_DEFAULT}
+    )
+    """,
+    f"""
+    CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        full_name TEXT NOT NULL,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        is_admin INTEGER NOT NULL DEFAULT 0,
+        auth_version INTEGER NOT NULL DEFAULT 1,
+        account_type TEXT NOT NULL DEFAULT 'couple',
+        partner_invite TEXT NOT NULL DEFAULT '',
+        couple_id TEXT NOT NULL DEFAULT '',
+        avatar_id TEXT NOT NULL DEFAULT '1',
+        email TEXT DEFAULT '',
+        created_at TEXT DEFAULT {_TS_DEFAULT}
+    )
+    """,
+    f"""
+    CREATE TABLE IF NOT EXISTS user_categories (
+        id TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        normalized_name TEXT NOT NULL,
+        color TEXT NOT NULL,
+        icon TEXT NOT NULL,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        deletable INTEGER NOT NULL DEFAULT 1,
+        is_monthly_custom INTEGER NOT NULL DEFAULT 0,
+        month_label TEXT NOT NULL DEFAULT '',
+        created_at TEXT DEFAULT {_TS_DEFAULT},
+        updated_at TEXT DEFAULT {_TS_DEFAULT},
+        UNIQUE(user_id, normalized_name, is_monthly_custom, month_label)
+    )
+    """,
+    f"""
+    CREATE TABLE IF NOT EXISTS expenses (
+        id SERIAL PRIMARY KEY,
+        expense_date TEXT NOT NULL,
+        amount DOUBLE PRECISION NOT NULL CHECK(amount > 0),
+        name TEXT NOT NULL DEFAULT '',
+        category TEXT NOT NULL,
+        description TEXT NOT NULL,
+        paid_by TEXT NOT NULL,
+        expense_type TEXT NOT NULL CHECK(expense_type IN ('Personale', 'Condivisa')),
+        owner TEXT,
+        shared_couple_id TEXT,
+        split_type TEXT NOT NULL DEFAULT 'equal',
+        split_ratio DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+        is_settled INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT DEFAULT {_TS_DEFAULT},
+        updated_at TEXT DEFAULT {_TS_DEFAULT}
+    )
+    """,
+    f"""
+    CREATE TABLE IF NOT EXISTS incomes (
+        id SERIAL PRIMARY KEY,
+        income_date TEXT NOT NULL,
+        amount DOUBLE PRECISION NOT NULL CHECK(amount > 0),
+        source TEXT NOT NULL,
+        description TEXT NOT NULL,
+        owner TEXT NOT NULL DEFAULT '',
+        created_at TEXT DEFAULT {_TS_DEFAULT},
+        updated_at TEXT DEFAULT {_TS_DEFAULT}
+    )
+    """,
+    f"""
+    CREATE TABLE IF NOT EXISTS couples (
+        id TEXT PRIMARY KEY,
+        owner_user_id INTEGER NOT NULL,
+        partner_user_id INTEGER,
+        created_at TEXT DEFAULT {_TS_DEFAULT}
+    )
+    """,
+    f"""
+    CREATE TABLE IF NOT EXISTS couple_invites (
+        id SERIAL PRIMARY KEY,
+        invite_token TEXT NOT NULL UNIQUE,
+        couple_id TEXT NOT NULL,
+        owner_user_id INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        used_by_user_id INTEGER,
+        created_at TEXT DEFAULT {_TS_DEFAULT},
+        used_at TEXT
+    )
+    """,
+]
+
+_DEFAULT_CATEGORIES = [
+    "Casa",
+    "Spesa",
+    "Trasporti",
+    "Ristoranti",
+    "Abbonamenti",
+    "Svago",
+    "Regali",
+    "Cura persona",
+    "Altro",
+]
 
 
 def initialize_database() -> None:
-    """Crea le tabelle principali e inserisce dati demo al primo avvio."""
+    """Crea le tabelle se mancano e inserisce le categorie di default."""
     with get_connection() as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS categories (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
+        for statement in _SCHEMA_STATEMENTS:
+            connection.execute(statement)
 
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                full_name TEXT NOT NULL,
-                username TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        _ensure_user_email_column(connection)
-
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS expenses (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                expense_date TEXT NOT NULL,
-                amount REAL NOT NULL CHECK(amount > 0),
-                name TEXT NOT NULL DEFAULT '',
-                category TEXT NOT NULL,
-                description TEXT NOT NULL,
-                paid_by TEXT NOT NULL,
-                expense_type TEXT NOT NULL CHECK(expense_type IN ('Personale', 'Condivisa')),
-                owner TEXT,
-                split_type TEXT NOT NULL DEFAULT 'equal',
-                split_ratio REAL NOT NULL DEFAULT 0.5,
-                is_settled INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        _migrate_expenses_schema_if_needed(connection)
-
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS incomes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                income_date TEXT NOT NULL,
-                amount REAL NOT NULL CHECK(amount > 0),
-                source TEXT NOT NULL,
-                description TEXT NOT NULL,
-                owner TEXT NOT NULL,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        _ensure_income_owner_column(connection)
-
-        existing_usernames = {
-            row["username"]
-            for row in connection.execute("SELECT username FROM users").fetchall()
+        existing = {
+            row["name"].lower()
+            for row in connection.execute("SELECT name FROM categories").fetchall()
         }
-        users_to_insert = []
-        if "io" not in existing_usernames:
-            users_to_insert.append(("Mattia", "io", "", _hash_password("")))
-        if "compagna" not in existing_usernames:
-            users_to_insert.append(("Compagna", "compagna", "", _hash_password("demo123")))
-        if users_to_insert:
-            connection.executemany(
-                """
-                INSERT INTO users (full_name, username, email, password_hash)
-                VALUES (?, ?, ?, ?)
-                """,
-                users_to_insert,
-            )
-
-        usernames = [
-            row["username"]
-            for row in connection.execute("SELECT username FROM users ORDER BY id ASC").fetchall()
-        ]
-        primary_username = usernames[0] if usernames else "io"
-        secondary_username = usernames[1] if len(usernames) > 1 else "compagna"
-        connection.execute(
-            """
-            UPDATE expenses
-            SET paid_by = CASE
-                WHEN LOWER(paid_by) = 'io' THEN ?
-                WHEN LOWER(paid_by) = 'compagna' THEN ?
-                ELSE paid_by
-            END
-            WHERE LOWER(paid_by) IN ('io', 'compagna')
-            """,
-            (primary_username, secondary_username),
-        )
-        connection.execute(
-            """
-            UPDATE expenses
-            SET owner = CASE
-                WHEN expense_type = 'Personale' AND (owner IS NULL OR TRIM(owner) = '') THEN paid_by
-                ELSE owner
-            END
-            """
-        )
-
-        categories_count = connection.execute("SELECT COUNT(*) AS total FROM categories").fetchone()["total"]
-        if categories_count == 0:
-            connection.executemany(
-                """
-                INSERT INTO categories (name)
-                VALUES (?)
-                """,
-                [
-                    ("Spesa",),
-                    ("Casa",),
-                    ("Trasporti",),
-                    ("Ristoranti",),
-                    ("Svago",),
-                    ("Salute",),
-                    ("Abbonamenti",),
-                    ("Viaggi",),
-                    ("Regali",),
-                    ("Altro",),
-                ],
-            )
-
-        count = connection.execute("SELECT COUNT(*) AS total FROM expenses").fetchone()["total"]
-        if count == 0:
-            connection.executemany(
-                """
-                INSERT INTO expenses (
-                    expense_date,
-                    amount,
-                    name,
-                    category,
-                    description,
-                    paid_by,
-                    expense_type,
-                    owner,
-                    split_type,
-                    split_ratio,
-                    is_settled
+        for category in _DEFAULT_CATEGORIES:
+            if category.lower() not in existing:
+                connection.execute(
+                    "INSERT INTO categories (name) VALUES (?)", (category,)
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    ("2026-03-02", 45.50, "Supermercato", "Spesa", "Supermercato settimanale", primary_username, "Condivisa", None, "equal", 0.5, 0),
-                    ("2026-03-05", 18.90, "Benzina scooter", "Trasporti", "Benzina scooter", primary_username, "Personale", primary_username, "equal", 1.0, 0),
-                    ("2026-03-07", 72.00, "Bollette luce", "Casa", "Bollette luce", secondary_username, "Condivisa", None, "equal", 0.5, 0),
-                    ("2026-03-10", 25.00, "Cinema", "Svago", "Cinema", secondary_username, "Condivisa", None, "custom", 0.4, 0),
-                    ("2026-03-12", 32.00, "Farmacia", "Salute", "Farmacia", secondary_username, "Personale", secondary_username, "equal", 1.0, 0),
-                    ("2026-02-18", 120.00, "Internet mensile", "Casa", "Internet mensile", primary_username, "Condivisa", None, "equal", 0.5, 0),
-                    ("2026-02-22", 54.90, "Cena fuori", "Ristoranti", "Cena fuori", primary_username, "Condivisa", None, "custom", 0.6, 0),
-                    ("2026-01-28", 89.99, "Corso online", "Abbonamenti", "Corso online", primary_username, "Personale", primary_username, "equal", 1.0, 0),
-                ],
-            )
-
-        incomes_count = connection.execute("SELECT COUNT(*) AS total FROM incomes").fetchone()["total"]
-        if incomes_count == 0:
-            connection.executemany(
-                """
-                INSERT INTO incomes (
-                    income_date,
-                    amount,
-                    source,
-                    description,
-                    owner
-                )
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                [
-                    ("2026-03-01", 2400.00, "Stipendio", "Entrata mensile principale", primary_username),
-                    ("2026-03-15", 180.00, "Extra", "Lavoretto freelance", primary_username),
-                    ("2026-02-01", 2400.00, "Stipendio", "Entrata mensile principale", primary_username),
-                    ("2026-01-01", 2400.00, "Stipendio", "Entrata mensile principale", primary_username),
-                ],
-            )
-
-
-def _hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
-
-
-def _ensure_user_email_column(connection: sqlite3.Connection) -> None:
-    columns = connection.execute("PRAGMA table_info(users)").fetchall()
-    existing_names = {column["name"] for column in columns}
-    if "email" in existing_names:
-        return
-    connection.execute("ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''")
-
-
-def _migrate_expenses_schema_if_needed(connection: sqlite3.Connection) -> None:
-    columns = connection.execute("PRAGMA table_info(expenses)").fetchall()
-    existing_names = {column["name"] for column in columns}
-    needs_migration = (
-        "paid_by" not in existing_names
-        or "owner" not in existing_names
-        or "split_type" not in existing_names
-        or "split_ratio" not in existing_names
-        or "is_settled" not in existing_names
-        or "payer" in existing_names
-        or "my_share_percentage" in existing_names
-    )
-    if not needs_migration:
-        connection.execute(
-            """
-            UPDATE expenses
-            SET owner = CASE
-                WHEN expense_type = 'Personale' AND (owner IS NULL OR TRIM(owner) = '') THEN paid_by
-                ELSE owner
-            END
-            """
-        )
-        return
-
-    source_paid_column = "paid_by" if "paid_by" in existing_names else "payer"
-    source_owner_column = "owner" if "owner" in existing_names else source_paid_column
-    source_name_column = "name" if "name" in existing_names else "description"
-    source_split_type_expr = (
-        "CASE WHEN split_type = 'Personalizzata' THEN 'custom' ELSE 'equal' END"
-        if "split_type" in existing_names
-        else "'equal'"
-    )
-    source_split_ratio_expr = "0.5"
-    source_is_settled_expr = "COALESCE(is_settled, 0)" if "is_settled" in existing_names else "0"
-
-    connection.execute("DROP TABLE IF EXISTS expenses_new")
-    connection.execute(
-        """
-        CREATE TABLE expenses_new (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            expense_date TEXT NOT NULL,
-            amount REAL NOT NULL CHECK(amount > 0),
-            name TEXT NOT NULL DEFAULT '',
-            category TEXT NOT NULL,
-            description TEXT NOT NULL,
-            paid_by TEXT NOT NULL,
-            expense_type TEXT NOT NULL CHECK(expense_type IN ('Personale', 'Condivisa')),
-            owner TEXT,
-            split_type TEXT NOT NULL DEFAULT 'equal',
-            split_ratio REAL NOT NULL DEFAULT 0.5,
-            is_settled INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-    connection.execute(
-        f"""
-        INSERT INTO expenses_new (
-            id,
-            expense_date,
-            amount,
-            name,
-            category,
-            description,
-            paid_by,
-            expense_type,
-            owner,
-            split_type,
-            split_ratio,
-            is_settled,
-            created_at,
-            updated_at
-        )
-        SELECT
-            id,
-            expense_date,
-            amount,
-            COALESCE(NULLIF(TRIM({source_name_column}), ''), TRIM(description), 'Spesa'),
-            category,
-            description,
-            CASE
-                WHEN LOWER({source_paid_column}) = 'io' THEN 'io'
-                WHEN LOWER({source_paid_column}) = 'compagna' THEN 'compagna'
-                ELSE {source_paid_column}
-            END,
-            expense_type,
-            CASE
-                WHEN expense_type = 'Personale' THEN
-                    CASE
-                        WHEN LOWER({source_owner_column}) = 'io' THEN 'io'
-                        WHEN LOWER({source_owner_column}) = 'compagna' THEN 'compagna'
-                        ELSE {source_owner_column}
-                    END
-                ELSE NULL
-            END,
-            CASE
-                WHEN expense_type = 'Personale' THEN 'equal'
-                ELSE {source_split_type_expr}
-            END,
-            CASE
-                WHEN expense_type = 'Personale' THEN 1.0
-                ELSE {source_split_ratio_expr}
-            END,
-            CASE
-                WHEN expense_type = 'Personale' THEN 0
-                ELSE {source_is_settled_expr}
-            END,
-            created_at,
-            updated_at
-        FROM expenses
-        """
-    )
-    connection.execute("DROP TABLE expenses")
-    connection.execute("ALTER TABLE expenses_new RENAME TO expenses")
-
-
-def _ensure_income_owner_column(connection: sqlite3.Connection) -> None:
-    columns = connection.execute("PRAGMA table_info(incomes)").fetchall()
-    existing_names = {column["name"] for column in columns}
-    if "owner" not in existing_names:
-        connection.execute("ALTER TABLE incomes ADD COLUMN owner TEXT DEFAULT ''")
-
-    first_user = connection.execute("SELECT username FROM users ORDER BY id ASC LIMIT 1").fetchone()
-    default_owner = first_user["username"] if first_user is not None else "io"
-    connection.execute(
-        """
-        UPDATE incomes
-        SET owner = ?
-        WHERE owner IS NULL OR TRIM(owner) = ''
-        """,
-        (default_owner,),
-    )

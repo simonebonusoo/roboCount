@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import os
 import secrets
+import time
 from datetime import date
 from typing import Annotated
 
 import pandas as pd
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Response, status
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.schemas import (
+    AdminUserUpdateRequest,
+    AvatarUpdateRequest,
     BulkDeletePayload,
+    CategoryDeletePayload,
     CategoryPayload,
+    CategoryUpdatePayload,
     CalendarDayDetailResponse,
     CalendarResponse,
     CoupleBalanceResponse,
@@ -19,6 +24,7 @@ from backend.schemas import (
     IncomePayload,
     LoginRequest,
     ProfileUpdateRequest,
+    RegisterRequest,
     SettledPayload,
 )
 from backend.serializers import (
@@ -36,6 +42,9 @@ from services import (
     EXPENSE_TYPE_OPTIONS,
     SHARED_SPLIT_OPTIONS,
     add_category,
+    add_personal_category,
+    admin_delete_user,
+    admin_update_user,
     apply_filters,
     apply_income_filters,
     authenticate_user,
@@ -46,27 +55,45 @@ from services import (
     build_dashboard_metrics,
     build_income_vs_expense_summary,
     compute_balance,
+    compute_user_expense_total,
+    compute_user_shared_expense_total,
     create_expense,
     create_income,
+    create_user,
+    create_couple_invite,
     delete_category,
+    delete_monthly_category,
+    delete_personal_category,
     delete_expense,
     delete_income,
+    ensure_user_categories,
     get_categories,
-    get_couple_usernames,
+    get_category_items,
+    get_couple_member_details,
+    get_couple_member_usernames,
     get_expense_by_id,
     get_expenses,
     get_income_by_id,
     get_incomes,
     get_month_options,
     get_partner_username,
+    get_monthly_categories,
+    get_personal_categories,
     get_shared_expenses,
     get_user_by_id,
+    get_user_by_username,
     get_usernames,
     get_visible_expenses,
     get_visible_incomes,
+    is_admin_user,
+    list_users,
+    reset_personal_categories,
     update_expense,
     update_expense_settled,
     update_income,
+    update_monthly_category,
+    update_personal_category,
+    update_user_avatar,
     update_user_profile,
     validate_expense_data,
     validate_income_data,
@@ -74,7 +101,11 @@ from services import (
 
 
 SESSION_COOKIE = "monitor_spese_session"
-SESSION_STORE: dict[str, int] = {}
+SESSION_STORE: dict[str, dict[str, int]] = {}
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = 300
+LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 5
+LOGIN_RATE_LIMIT_BLOCK_SECONDS = 300
+LOGIN_ATTEMPTS: dict[str, dict[str, float | list[float]]] = {}
 origins = [
     "http://127.0.0.1:5173",
     "http://localhost:5173",
@@ -95,20 +126,121 @@ def startup() -> None:
     initialize_database()
 
 
+def _is_local_hostname(hostname: str | None) -> bool:
+    normalized = (hostname or "").split(":", 1)[0].strip().lower()
+    return normalized in {"127.0.0.1", "localhost", "::1"}
+
+
+def _should_use_secure_cookie(request: Request) -> bool:
+    override = os.getenv("MONITOR_SPESE_COOKIE_SECURE", "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower()
+    if forwarded_proto == "https":
+        return True
+    if _is_local_hostname(request.url.hostname):
+        return False
+    return request.url.scheme == "https"
+
+
+def _set_session_cookie(response: Response, request: Request, session_id: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE,
+        session_id,
+        httponly=True,
+        samesite="lax",
+        secure=_should_use_secure_cookie(request),
+        path="/",
+    )
+
+
+def _create_session(user: dict) -> str:
+    session_id = secrets.token_urlsafe(32)
+    SESSION_STORE[session_id] = {
+        "user_id": int(user["id"]),
+        "auth_version": int(user.get("auth_version", 1) or 1),
+    }
+    return session_id
+
+
+def _invalidate_user_sessions(user_id: int) -> None:
+    stale_session_ids = [
+        session_id
+        for session_id, session_data in SESSION_STORE.items()
+        if int(session_data.get("user_id", -1)) == int(user_id)
+    ]
+    for session_id in stale_session_ids:
+        SESSION_STORE.pop(session_id, None)
+
+
+def _login_rate_limit_key(request: Request, username: str) -> str:
+    client_ip = request.client.host if request.client and request.client.host else "unknown"
+    return f"{client_ip}:{username.strip().lower()}"
+
+
+def _enforce_login_rate_limit(request: Request, username: str) -> str:
+    key = _login_rate_limit_key(request, username)
+    now = time.time()
+    entry = LOGIN_ATTEMPTS.get(key)
+    if entry is None:
+        return key
+
+    blocked_until = float(entry.get("blocked_until", 0.0) or 0.0)
+    attempts = [
+        timestamp
+        for timestamp in entry.get("attempts", [])
+        if now - float(timestamp) <= LOGIN_RATE_LIMIT_WINDOW_SECONDS
+    ]
+    entry["attempts"] = attempts
+
+    if blocked_until > now:
+        retry_after = max(1, int(blocked_until - now))
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Troppi tentativi di accesso. Riprova tra circa {retry_after} secondi.",
+        )
+
+    entry["blocked_until"] = 0.0
+    return key
+
+
+def _record_failed_login_attempt(key: str) -> None:
+    now = time.time()
+    entry = LOGIN_ATTEMPTS.setdefault(key, {"attempts": [], "blocked_until": 0.0})
+    attempts = [
+        timestamp
+        for timestamp in entry.get("attempts", [])
+        if now - float(timestamp) <= LOGIN_RATE_LIMIT_WINDOW_SECONDS
+    ]
+    attempts.append(now)
+    entry["attempts"] = attempts
+    if len(attempts) >= LOGIN_RATE_LIMIT_MAX_ATTEMPTS:
+        entry["blocked_until"] = now + LOGIN_RATE_LIMIT_BLOCK_SECONDS
+
+
+def _reset_login_attempts(key: str) -> None:
+    LOGIN_ATTEMPTS.pop(key, None)
+
+
 def get_current_user(
     session_id: Annotated[str | None, Cookie(alias=SESSION_COOKIE)] = None,
 ) -> dict:
     if not session_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sessione non valida.")
 
-    user_id = SESSION_STORE.get(session_id)
-    if user_id is None:
+    session_data = SESSION_STORE.get(session_id)
+    if session_data is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sessione scaduta.")
 
-    user = get_user_by_id(user_id)
+    user = get_user_by_id(int(session_data["user_id"]))
     if user is None:
         SESSION_STORE.pop(session_id, None)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Utente non disponibile.")
+    if int(session_data.get("auth_version", 0)) != int(user.get("auth_version", 1)):
+        SESSION_STORE.pop(session_id, None)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sessione revocata. Accedi di nuovo.")
     return user
 
 
@@ -144,6 +276,23 @@ def _filter_expenses(
         )
         filtered = filtered[mask]
     return filtered.copy()
+
+
+def _get_expense_category_options_for_month(current_username: str, month_label: str) -> list[str]:
+    dataframe = _build_expense_frame(current_username)
+    if month_label and month_label != "Tutti" and not dataframe.empty:
+        dataframe = dataframe[dataframe["month_label"] == month_label]
+    if dataframe.empty:
+        return ["Tutte"]
+    categories = sorted(
+        {
+            str(category).strip()
+            for category in dataframe["category"].dropna().tolist()
+            if str(category).strip()
+        },
+        key=str.lower,
+    )
+    return ["Tutte"] + categories
 
 
 def _sort_expenses(dataframe: pd.DataFrame, sort: str = "date_desc") -> pd.DataFrame:
@@ -185,17 +334,13 @@ def _filter_incomes(
 
 
 def _build_expense_list_summary(dataframe: pd.DataFrame, current_username: str) -> dict:
-    total_amount = float(dataframe["amount"].sum()) if not dataframe.empty else 0.0
+    total_amount = compute_user_expense_total(dataframe, current_username)
     personal_total = (
         float(dataframe[dataframe["expense_type"] == "Personale"]["amount"].sum())
         if not dataframe.empty
         else 0.0
     )
-    shared_total = (
-        float(dataframe[dataframe["expense_type"] == "Condivisa"]["amount"].sum())
-        if not dataframe.empty
-        else 0.0
-    )
+    shared_total = compute_user_shared_expense_total(dataframe, current_username)
     balance = compute_balance(current_username, get_partner_username(current_username), dataframe) if current_username else 0.0
     return {
         "total_amount": total_amount,
@@ -218,16 +363,25 @@ def _build_income_list_summary(dataframe: pd.DataFrame) -> dict:
     }
 
 
-def _ensure_valid_expense_payload(payload: ExpensePayload, current_username: str) -> ExpensePayload:
+def _is_personal_account(user: dict) -> bool:
+    return (user.get("account_type") or "couple") == "personal"
+
+
+def _ensure_valid_expense_payload(payload: ExpensePayload, current_user: dict) -> ExpensePayload:
+    current_username = current_user["username"]
     paid_by = payload.paid_by
     expense_type = payload.expense_type
     if expense_type not in EXPENSE_TYPE_OPTIONS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Tipo spesa non valido.")
     if expense_type == "Personale":
-        paid_by = current_username
-    elif paid_by not in get_couple_usernames():
+        if is_admin_user(current_username):
+            if paid_by not in get_usernames():
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Pagatore non valido.")
+        else:
+            paid_by = current_username
+    elif paid_by not in (get_usernames() if is_admin_user(current_username) else get_couple_member_usernames(current_username)):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Pagatore non valido.")
-    if payload.category not in get_categories():
+    if payload.category not in get_categories(current_username, payload.expense_date):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Categoria non valida.")
 
     validated_payload = ExpensePayload(
@@ -259,22 +413,36 @@ def healthcheck() -> dict:
 
 
 @app.post("/api/auth/login")
-def login(payload: LoginRequest, response: Response) -> dict:
+def login(payload: LoginRequest, request: Request, response: Response) -> dict:
+    rate_limit_key = _enforce_login_rate_limit(request, payload.username)
     user = authenticate_user(payload.username, payload.password)
     if user is None:
+        _record_failed_login_attempt(rate_limit_key)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenziali non valide.")
 
-    session_id = secrets.token_urlsafe(32)
-    SESSION_STORE[session_id] = user["id"]
-    response.set_cookie(
-        SESSION_COOKIE,
-        session_id,
-        httponly=True,
-        samesite="lax",
-        secure=False,
-        path="/",
-    )
+    _reset_login_attempts(rate_limit_key)
+    session_id = _create_session(user)
+    _set_session_cookie(response, request, session_id)
     return {"user": serialize_user(user)}
+
+
+@app.post("/api/auth/register", status_code=status.HTTP_201_CREATED)
+def register(payload: RegisterRequest, request: Request, response: Response) -> dict:
+    success, message, user = create_user(
+        full_name=payload.full_name,
+        username=payload.username,
+        email=payload.email,
+        password=payload.password,
+        account_type=payload.account_type,
+        partner_invite=payload.partner_invite,
+        avatar_id=payload.avatar_id,
+    )
+    if not success or user is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+
+    session_id = _create_session(user)
+    _set_session_cookie(response, request, session_id)
+    return {"message": message, "user": serialize_user(user)}
 
 
 @app.post("/api/auth/logout")
@@ -293,13 +461,85 @@ def auth_me(current_user: CurrentUser) -> dict:
 
 @app.get("/api/meta/options")
 def get_meta_options(current_user: CurrentUser) -> dict:
-    del current_user
+    ensure_user_categories(current_user["username"])
+    if is_admin_user(current_user["username"]):
+        usernames = get_usernames()
+        return {
+            "categories": get_categories(current_user["username"]),
+            "category_items": get_category_items(current_user["username"]),
+            "usernames": usernames,
+            "couple_members": [serialize_user(user) for user in list_users()],
+            "couple_member_count": len(usernames),
+            "couple_member_limit": len(usernames),
+            "expense_types": EXPENSE_TYPE_OPTIONS,
+            "split_options": SHARED_SPLIT_OPTIONS,
+        }
+    if _is_personal_account(current_user):
+        return {
+            "categories": get_categories(current_user["username"]),
+            "category_items": get_category_items(current_user["username"]),
+            "usernames": [current_user["username"]],
+            "couple_members": [serialize_user(current_user)],
+            "couple_member_count": 1,
+            "couple_member_limit": 1,
+            "expense_types": ["Personale"],
+            "split_options": ["equal"],
+        }
+    couple_usernames = get_couple_member_usernames(current_user["username"])
+    couple_members = get_couple_member_details(current_user["username"])
     return {
-        "categories": get_categories(),
-        "usernames": list(get_couple_usernames()),
+        "categories": get_categories(current_user["username"]),
+        "category_items": get_category_items(current_user["username"]),
+        "usernames": couple_usernames,
+        "couple_members": [serialize_user(user) for user in couple_members],
+        "couple_member_count": len(couple_usernames),
+        "couple_member_limit": 2,
         "expense_types": EXPENSE_TYPE_OPTIONS,
         "split_options": SHARED_SPLIT_OPTIONS,
     }
+
+
+@app.get("/api/admin/users")
+def get_admin_users(current_user: CurrentUser) -> dict:
+    if not is_admin_user(current_user["username"]):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Operazione riservata all'admin.")
+    return {"items": [serialize_user(user) | {"created_at": user.get("created_at")} for user in list_users()]}
+
+
+@app.put("/api/admin/users/{user_id}")
+def update_admin_user(user_id: int, payload: AdminUserUpdateRequest, current_user: CurrentUser) -> dict:
+    if not is_admin_user(current_user["username"]):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Operazione riservata all'admin.")
+    success, message, updated_user, password_changed = admin_update_user(
+        user_id=user_id,
+        full_name=payload.full_name,
+        username=payload.username,
+        email=payload.email,
+        account_type=payload.account_type,
+        partner_invite=payload.partner_invite,
+        is_admin=payload.is_admin,
+        new_password=payload.new_password,
+    )
+    if not success or updated_user is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    if password_changed:
+        _invalidate_user_sessions(user_id)
+    return {
+        "message": message,
+        "user": serialize_user(updated_user),
+        "password_changed": password_changed,
+    }
+
+
+@app.delete("/api/admin/users/{user_id}")
+def delete_admin_user(user_id: int, current_user: CurrentUser) -> dict:
+    if not is_admin_user(current_user["username"]):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Operazione riservata all'admin.")
+    success, message = admin_delete_user(user_id)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    _invalidate_user_sessions(user_id)
+    return {"message": message}
 
 
 @app.get("/api/profile")
@@ -307,8 +547,122 @@ def get_profile(current_user: CurrentUser) -> dict:
     return {"user": serialize_user(current_user)}
 
 
+@app.get("/api/profile/categories")
+def get_profile_categories(current_user: CurrentUser, month_label: str = "") -> dict:
+    effective_month = month_label or date.today().strftime("%Y-%m")
+    defaults = get_personal_categories(current_user["username"])
+    monthly = get_monthly_categories(current_user["username"], effective_month)
+    return {"items": defaults, "defaults": defaults, "monthly": monthly, "month_label": effective_month}
+
+
+@app.post("/api/profile/categories")
+def create_profile_category(payload: CategoryPayload, current_user: CurrentUser) -> dict:
+    success, message, category = add_personal_category(current_user["username"], payload.name, payload.color, payload.icon)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    return {"message": message, "category": category}
+
+
+@app.put("/api/profile/categories/{category_id}")
+def edit_profile_category(category_id: str, payload: CategoryUpdatePayload, current_user: CurrentUser) -> dict:
+    success, message, category = update_personal_category(
+        current_user["username"],
+        category_id,
+        payload.name,
+        payload.color,
+        payload.icon,
+    )
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    return {"message": message, "category": category}
+
+
+@app.delete("/api/profile/categories/{category_id}")
+def remove_profile_category(category_id: str, current_user: CurrentUser) -> dict:
+    success, message = delete_personal_category(current_user["username"], category_id)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    return {"message": message}
+
+
+@app.post("/api/profile/categories/{category_id}/delete")
+def remove_profile_category_with_payload(category_id: str, payload: CategoryDeletePayload, current_user: CurrentUser) -> dict:
+    success, message = delete_personal_category(current_user["username"], category_id, payload.destination_category)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    return {"message": message}
+
+
+@app.post("/api/profile/monthly-categories")
+def create_profile_monthly_category(payload: CategoryPayload, current_user: CurrentUser) -> dict:
+    effective_month = payload.month_label or date.today().strftime("%Y-%m")
+    success, message, category = add_category(
+        payload.name,
+        current_user["username"],
+        effective_month,
+        payload.color,
+        payload.icon,
+    )
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    return {"message": message, "category": category}
+
+
+@app.put("/api/profile/monthly-categories/{category_id}")
+def edit_profile_monthly_category(category_id: str, payload: CategoryUpdatePayload, current_user: CurrentUser) -> dict:
+    success, message, category = update_monthly_category(
+        current_user["username"],
+        category_id,
+        payload.name,
+        payload.color,
+        payload.icon,
+    )
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    return {"message": message, "category": category}
+
+
+@app.delete("/api/profile/monthly-categories/{category_id}")
+def remove_profile_monthly_category(category_id: str, current_user: CurrentUser) -> dict:
+    success, message = delete_monthly_category(current_user["username"], category_id)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    return {"message": message}
+
+
+@app.post("/api/profile/categories/reset")
+def reset_profile_categories(current_user: CurrentUser) -> dict:
+    success, message, items = reset_personal_categories(current_user["username"])
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    return {"message": message, "items": items}
+
+
+@app.post("/api/couple-invite")
+def create_partner_invite(current_user: CurrentUser, request: Request) -> dict:
+    success, message, invite = create_couple_invite(current_user["username"])
+    if not success or invite is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    invite_url = str(request.url_for("register_via_invite")).split("?", 1)[0] + "?mode=register&type=couple&invite_token=" + invite["invite_token"]
+    return {"message": message, "invite_token": invite["invite_token"], "invite_url": invite_url}
+
+
+@app.get("/login", include_in_schema=False, name="register_via_invite")
+def register_via_invite_placeholder() -> dict:
+    return {"detail": "Frontend route"}
+
+
+@app.put("/api/profile/avatar")
+def update_profile_avatar(payload: AvatarUpdateRequest, current_user: CurrentUser) -> dict:
+    success, message, updated_user = update_user_avatar(current_user["id"], payload.avatar_id)
+    if not success or updated_user is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    return {"message": message, "user": serialize_user(updated_user), "sessions_revoked": False}
+
+
 @app.put("/api/profile")
 def update_profile(payload: ProfileUpdateRequest, current_user: CurrentUser) -> dict:
+    password_changed = bool(payload.new_password.strip())
     success, message, updated_user = update_user_profile(
         user_id=current_user["id"],
         full_name=payload.full_name,
@@ -318,28 +672,40 @@ def update_profile(payload: ProfileUpdateRequest, current_user: CurrentUser) -> 
     )
     if not success or updated_user is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
-    return {"message": message, "user": serialize_user(updated_user)}
+    if password_changed:
+        _invalidate_user_sessions(current_user["id"])
+    return {
+        "message": message,
+        "user": serialize_user(updated_user),
+        "password_changed": password_changed,
+        "sessions_revoked": password_changed,
+    }
 
 
 @app.get("/api/categories")
-def list_categories(current_user: CurrentUser) -> dict:
-    del current_user
-    return {"items": get_categories()}
+def list_categories(current_user: CurrentUser, month_label: str = "") -> dict:
+    effective_month_label = month_label or date.today().strftime("%Y-%m")
+    category_items = get_category_items(current_user["username"], effective_month_label)
+    return {"items": [item["name"] for item in category_items], "category_items": category_items}
 
 
 @app.post("/api/categories")
 def create_category(payload: CategoryPayload, current_user: CurrentUser) -> dict:
-    del current_user
-    success, message = add_category(payload.name)
+    success, message, category = add_category(
+        payload.name,
+        current_user["username"],
+        payload.month_label or date.today().strftime("%Y-%m"),
+        payload.color,
+        payload.icon,
+    )
     if not success:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
-    return {"message": message}
+    return {"message": message, "category": category}
 
 
 @app.delete("/api/categories/{category_name}")
-def remove_category(category_name: str, current_user: CurrentUser) -> dict:
-    del current_user
-    success, message = delete_category(category_name)
+def remove_category(category_name: str, current_user: CurrentUser, month_label: str = "") -> dict:
+    success, message = delete_category(category_name, current_user["username"], month_label or date.today().strftime("%Y-%m"))
     if not success:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
     return {"message": message}
@@ -353,8 +719,8 @@ def get_dashboard(current_user: CurrentUser, month_label: str = "Tutti") -> dict
     filtered_expenses = apply_filters(expenses, month_label, "Tutte", "Tutti", "Tutte")
     filtered_incomes = apply_income_filters(incomes, month_label)
     metrics = build_dashboard_metrics(filtered_expenses, current_username)
-    category_summary = build_category_summary(filtered_expenses)
-    income_expense_summary = build_income_vs_expense_summary(incomes, expenses)
+    category_summary = build_category_summary(filtered_expenses, current_username)
+    income_expense_summary = build_income_vs_expense_summary(incomes, expenses, current_username)
 
     month_options = sorted(set(get_month_options(expenses) + get_month_options(incomes)), reverse=False)
     if "Tutti" in month_options:
@@ -428,8 +794,8 @@ def list_expenses(
         "summary": _build_expense_list_summary(filtered, current_username),
         "month_options": get_month_options(_build_expense_frame(current_username)),
         "filters": {
-            "category_options": ["Tutte"] + get_categories(),
-            "payer_options": ["Tutti"] + list(get_couple_usernames()),
+            "category_options": _get_expense_category_options_for_month(current_username, month_label),
+            "payer_options": ["Tutti"] + (get_usernames() if is_admin_user(current_username) else get_couple_member_usernames(current_username)),
             "expense_type_options": ["Tutte"] + EXPENSE_TYPE_OPTIONS,
             "sort_options": [
                 {"value": "date_desc", "label": "Data piu recente"},
@@ -469,7 +835,9 @@ def expense_detail(expense_id: int, current_user: CurrentUser) -> dict:
 @app.post("/api/expenses", status_code=status.HTTP_201_CREATED)
 def create_expense_endpoint(payload: ExpensePayload, current_user: CurrentUser) -> dict:
     current_username = current_user["username"]
-    valid_payload = _ensure_valid_expense_payload(payload, current_username)
+    if not is_admin_user(current_username) and _is_personal_account(current_user) and payload.expense_type != "Personale":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Le spese condivise sono disponibili solo negli account coppia.")
+    valid_payload = _ensure_valid_expense_payload(payload, current_user)
     create_expense(
         expense_date=valid_payload.expense_date,
         amount=valid_payload.amount,
@@ -487,7 +855,9 @@ def create_expense_endpoint(payload: ExpensePayload, current_user: CurrentUser) 
 @app.put("/api/expenses/{expense_id}")
 def update_expense_endpoint(expense_id: int, payload: ExpensePayload, current_user: CurrentUser) -> dict:
     current_username = current_user["username"]
-    valid_payload = _ensure_valid_expense_payload(payload, current_username)
+    if not is_admin_user(current_username) and _is_personal_account(current_user) and payload.expense_type != "Personale":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Le spese condivise sono disponibili solo negli account coppia.")
+    valid_payload = _ensure_valid_expense_payload(payload, current_user)
     updated = update_expense(
         expense_id=expense_id,
         current_username=current_username,
@@ -516,6 +886,8 @@ def delete_expense_endpoint(expense_id: int, current_user: CurrentUser) -> dict:
 
 @app.patch("/api/expenses/{expense_id}/settled")
 def update_expense_settled_endpoint(expense_id: int, payload: SettledPayload, current_user: CurrentUser) -> dict:
+    if _is_personal_account(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Il saldo di coppia non e disponibile per account personali.")
     expense = get_expense_by_id(expense_id, current_user["username"])
     if expense is None or expense.get("expense_type") != "Condivisa":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spesa condivisa non trovata.")
@@ -602,6 +974,8 @@ def get_couple_balance_view(
     status_filter: str = "all",
     category: str = "Tutte",
 ) -> CoupleBalanceResponse:
+    if _is_personal_account(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Il saldo di coppia non e disponibile per account personali.")
     current_username = current_user["username"]
     shared = get_shared_expenses()
     shared = get_visible_expenses(shared, current_username)
@@ -621,6 +995,8 @@ def get_couple_balance_view(
 
 @app.patch("/api/couple-balance/{expense_id}/settled")
 def update_couple_balance_settled(expense_id: int, payload: SettledPayload, current_user: CurrentUser) -> dict:
+    if _is_personal_account(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Il saldo di coppia non e disponibile per account personali.")
     expense = get_expense_by_id(expense_id, current_user["username"])
     if expense is None or expense.get("expense_type") != "Condivisa":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spesa condivisa non trovata.")
