@@ -1,27 +1,9 @@
 import { useNavigate } from "react-router-dom";
-import heroAvatar1 from "../assets/avatars/hero/avatar1.png";
-import heroAvatar2 from "../assets/avatars/hero/avatar2.png";
-import heroAvatar3 from "../assets/avatars/hero/avatar3.png";
-import heroAvatar4 from "../assets/avatars/hero/avatar4.png";
-import heroAvatar5 from "../assets/avatars/hero/avatar5.png";
-import heroAvatar6 from "../assets/avatars/hero/avatar6.png";
-import heroAvatar7 from "../assets/avatars/hero/avatar7.png";
-import heroAvatar8 from "../assets/avatars/hero/avatar8.png";
+import { getRobotAvatar } from "../utils/avatars";
 import "./CoupleHeroCard.css";
 
-const HERO_AVATARS = {
-  1: heroAvatar1,
-  2: heroAvatar2,
-  3: heroAvatar3,
-  4: heroAvatar4,
-  5: heroAvatar5,
-  6: heroAvatar6,
-  7: heroAvatar7,
-  8: heroAvatar8,
-};
-
 function getHeroAvatar(avatarId) {
-  return HERO_AVATARS[String(avatarId || "")] || heroAvatar1;
+  return getRobotAvatar(avatarId).src;
 }
 
 function formatHeroBalance(value) {

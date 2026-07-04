@@ -172,32 +172,6 @@ export function HomePage() {
 
   useEffect(() => subscribeAppDataChanged(() => setReloadKey((current) => current + 1)), []);
 
-  useEffect(() => {
-    if (isPersonalAccount) {
-      return undefined;
-    }
-
-    function refreshHomeData() {
-      setReloadKey((current) => current + 1);
-    }
-
-    function handleVisibilityChange() {
-      if (document.visibilityState === "visible") {
-        refreshHomeData();
-      }
-    }
-
-    window.addEventListener("focus", refreshHomeData);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    const intervalId = window.setInterval(refreshHomeData, 15000);
-
-    return () => {
-      window.removeEventListener("focus", refreshHomeData);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.clearInterval(intervalId);
-    };
-  }, [isPersonalAccount]);
-
   const monthOptions = useMemo(
     () => normalizeMonthOptions(dashboardData?.month_options || [], allExpenses, allIncomes),
     [dashboardData, allExpenses, allIncomes],
