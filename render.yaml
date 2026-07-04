@@ -7,7 +7,7 @@ services:
     runtime: python
     plan: free
     region: frankfurt          # stessa regione di Supabase (bassa latenza)
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements-backend.txt   # snello: niente streamlit
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
