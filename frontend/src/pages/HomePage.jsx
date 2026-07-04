@@ -63,6 +63,7 @@ export function HomePage() {
   const [isExpenseSubmitting, setIsExpenseSubmitting] = useState(false);
   const [inviteFeedback, setInviteFeedback] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [error, setError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
   const accountType = user?.account_type || "couple";
@@ -89,51 +90,29 @@ export function HomePage() {
   useEffect(() => {
     let isMounted = true;
 
-    async function bootstrap() {
-      setIsLoading(true);
-      setError("");
-
+    async function loadMeta() {
       try {
-        const [expensesResponse, incomesResponse, sharedResponse, metaResponse] = await Promise.all([
-          api.get("/api/expenses?month_label=Tutti"),
-          api.get("/api/incomes?month_label=Tutti"),
-          isPersonalAccount
-            ? Promise.resolve({ items: [] })
-            : api.get("/api/couple-balance?month_label=Tutti&status_filter=all"),
-          api.get("/api/meta/options"),
-        ]);
-
+        const metaResponse = await api.get("/api/meta/options");
         if (!isMounted) {
           return;
         }
-
-        setAllExpenses(expensesResponse.items || []);
-        setAllIncomes(incomesResponse.items || []);
-        setAllSharedExpenses(sharedResponse.items || []);
         setExpenseMeta(metaResponse);
         setCoupleMembers(metaResponse.usernames || []);
         setCoupleMemberProfiles(metaResponse.couple_members || []);
         setCoupleUserCount(metaResponse.couple_member_count ?? (metaResponse.usernames || []).length);
-
-        const initialMonth = searchParams.get("month_label") || pickInitialMonth([
-          ...(expensesResponse.month_options || []),
-          ...(incomesResponse.month_options || []),
-        ]);
-        setSelectedMonth(initialMonth);
       } catch (requestError) {
         if (isMounted) {
           setError(requestError.message || "Impossibile caricare la home.");
-          setIsLoading(false);
         }
       }
     }
 
-    bootstrap();
+    loadMeta();
 
     return () => {
       isMounted = false;
     };
-  }, [isPersonalAccount, reloadKey]);
+  }, [reloadKey]);
 
   useEffect(() => {
     if (!selectedMonth) {
@@ -170,6 +149,54 @@ export function HomePage() {
     };
   }, [selectedMonth, reloadKey]);
 
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadHistory() {
+      setIsHistoryLoading(true);
+
+      try {
+        const [expensesResponse, incomesResponse, sharedResponse] = await Promise.all([
+          api.get("/api/expenses?month_label=Tutti"),
+          api.get("/api/incomes?month_label=Tutti"),
+          isPersonalAccount
+            ? Promise.resolve({ items: [] })
+            : api.get("/api/couple-balance?month_label=Tutti&status_filter=all"),
+        ]);
+
+        if (!isMounted) {
+          return;
+        }
+
+        setAllExpenses(expensesResponse.items || []);
+        setAllIncomes(incomesResponse.items || []);
+        setAllSharedExpenses(sharedResponse.items || []);
+
+        if (!searchParams.get("month_label")) {
+          const initialMonth = pickInitialMonth([
+            ...(expensesResponse.month_options || []),
+            ...(incomesResponse.month_options || []),
+          ]);
+          setSelectedMonth((current) => current || initialMonth);
+        }
+      } catch (requestError) {
+        if (isMounted) {
+          setError((current) => current || requestError.message || "Impossibile completare il caricamento della home.");
+        }
+      } finally {
+        if (isMounted) {
+          setIsHistoryLoading(false);
+        }
+      }
+    }
+
+    loadHistory();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isPersonalAccount, reloadKey, searchParams]);
+
   useEffect(() => subscribeAppDataChanged(() => setReloadKey((current) => current + 1)), []);
 
   const monthOptions = useMemo(
@@ -189,6 +216,29 @@ export function HomePage() {
   const homeSummary = useMemo(() => {
     if (!selectedMonth) {
       return createEmptySummary();
+    }
+
+    const monthlySummary = findIncomeExpenseSummaryEntry(dashboardData?.income_expense_summary || [], selectedMonth);
+    const hasHistoricalData = allExpenses.length > 0 || allIncomes.length > 0 || allSharedExpenses.length > 0;
+
+    if (!hasHistoricalData && dashboardData) {
+      const totalExpenses = Number(dashboardData.metrics?.total_month || 0);
+      const totalIncomes = Number(monthlySummary?.entrate || 0);
+      const savings = Number(monthlySummary?.saldo ?? (totalIncomes - totalExpenses));
+      const coupleBalance = Number(dashboardData.metrics?.balance || 0);
+
+      return {
+        periodLabel: formatMonthHeading(selectedMonth),
+        contextNote: "Panoramica del mese attivo con focus immediato sul saldo.",
+        totalExpenses,
+        totalIncomes,
+        savings,
+        expenseCount: 0,
+        coupleBalance,
+        balanceNote: buildSavingsNote(savings),
+        coupleBalanceNote: buildCoupleBalanceNote(coupleBalance),
+        monthComparison: buildPreviousMonthComparisonFromSummary(dashboardData.income_expense_summary || [], selectedMonth),
+      };
     }
 
     const activeYear = selectedMonth.split("-")[0];
@@ -238,6 +288,15 @@ export function HomePage() {
   }, [allExpenses, scope, selectedMonth]);
 
   const chartData = useMemo(() => {
+    const hasHistoricalData = allExpenses.length > 0 || allIncomes.length > 0;
+    if (!hasHistoricalData) {
+      return {
+        monthTrend: buildMonthlyTrendFromSummary(dashboardData?.income_expense_summary || [], selectedMonth),
+        expenseTrend: [],
+        categoryDistribution: buildCategoryDistributionFromSummary(dashboardData?.category_summary || []),
+      };
+    }
+
     const activeYear = selectedMonth ? selectedMonth.split("-")[0] : "";
     const activeIncomes = scope === "Annuale"
       ? allIncomes.filter((item) => String(item.month_label || "").startsWith(activeYear))
@@ -265,11 +324,18 @@ export function HomePage() {
   }, [activeAnalyticsExpenses, selectedCategoryPreview, user]);
 
   const selectedCategoryTotal = useMemo(
-    () => selectedCategoryExpenses.reduce((sum, item) => sum + Number(item.userShare || 0), 0),
-    [selectedCategoryExpenses],
+    () => (
+      selectedCategoryExpenses.length
+        ? selectedCategoryExpenses.reduce((sum, item) => sum + Number(item.userShare || 0), 0)
+        : Number(selectedCategoryPreview?.value || 0)
+    ),
+    [selectedCategoryExpenses, selectedCategoryPreview],
   );
 
   const latestMovements = useMemo(() => {
+    if (!allExpenses.length) {
+      return dashboardData?.recent_expenses || [];
+    }
     const selectedExpenses = allExpenses.filter((item) => item.month_label === selectedMonth);
     return [...selectedExpenses]
       .sort((first, second) => {
@@ -295,13 +361,17 @@ export function HomePage() {
     [homeSummary.coupleBalance, partnerUser],
   );
   const monthTrendRows = useMemo(
-    () => buildHomeMonthTrendRows({
-      selectedMonth,
-      expenses: allExpenses,
-      incomes: allIncomes,
-      currentUsername: user?.username || "",
-    }),
-    [allExpenses, allIncomes, selectedMonth, user],
+    () => (
+      allExpenses.length || allIncomes.length
+        ? buildHomeMonthTrendRows({
+            selectedMonth,
+            expenses: allExpenses,
+            incomes: allIncomes,
+            currentUsername: user?.username || "",
+          })
+        : buildHomeMonthTrendRowsFromSummary(dashboardData?.income_expense_summary || [], selectedMonth)
+    ),
+    [allExpenses, allIncomes, dashboardData, selectedMonth, user],
   );
 
   useEffect(() => {
@@ -504,6 +574,7 @@ export function HomePage() {
                 <span><i className="income" />Entrate</span>
                 <span><i className="expense" />Spese</span>
               </div>
+              {isHistoryLoading ? <p className="panel-inline-note">Sto completando l'analisi storica in background.</p> : null}
             </section>
           </section>
         </div>
@@ -806,6 +877,9 @@ export function HomePage() {
   }
 
   function openCategoryPreview(entry) {
+    if (!allExpenses.length) {
+      return;
+    }
     const category = entry?.payload || entry;
     if (!category?.label) {
       return;
@@ -925,6 +999,49 @@ function buildHomeMonthTrendRows({ selectedMonth, expenses, incomes, currentUser
   const previousExpenseTotal = sumExpenseShares(previousExpenses, currentUsername);
   const currentSavings = currentIncomeTotal - currentExpenseTotal;
   const previousSavings = previousIncomeTotal - previousExpenseTotal;
+
+  return [
+    {
+      key: "income",
+      label: "Entrate",
+      subtitle: `vs ${previousShortLabel}`,
+      value: formatPercentageDelta(currentIncomeTotal, previousIncomeTotal),
+      tone: "positive",
+      direction: currentIncomeTotal >= previousIncomeTotal ? "up" : "down",
+      href: `/incomes?month_label=${encodeURIComponent(selectedMonth)}`,
+    },
+    {
+      key: "expenses",
+      label: "Spese",
+      subtitle: `vs ${previousShortLabel}`,
+      value: formatPercentageDelta(currentExpenseTotal, previousExpenseTotal),
+      tone: "expense",
+      direction: currentExpenseTotal >= previousExpenseTotal ? "up" : "down",
+      href: `/expenses?month_label=${encodeURIComponent(selectedMonth)}&category=Tutte&payer=Tutti&expense_type=Tutte`,
+    },
+    {
+      key: "savings",
+      label: "Risparmi",
+      subtitle: `vs ${previousShortLabel}`,
+      value: formatPercentageDelta(currentSavings, previousSavings),
+      tone: "saving",
+      direction: currentSavings >= previousSavings ? "up" : "down",
+      href: "/risparmi",
+    },
+  ];
+}
+
+function buildHomeMonthTrendRowsFromSummary(summary, selectedMonth) {
+  const current = findIncomeExpenseSummaryEntry(summary, selectedMonth);
+  const previous = findIncomeExpenseSummaryEntry(summary, getPreviousMonthLabel(selectedMonth));
+  const previousLabel = getPreviousMonthLabel(selectedMonth);
+  const previousShortLabel = previousLabel ? (formatMonthHeading(previousLabel).split(" ")[0] || "prima") : "prima";
+  const currentIncomeTotal = Number(current?.entrate || 0);
+  const previousIncomeTotal = Number(previous?.entrate || 0);
+  const currentExpenseTotal = Number(current?.uscite || 0);
+  const previousExpenseTotal = Number(previous?.uscite || 0);
+  const currentSavings = Number(current?.saldo || 0);
+  const previousSavings = Number(previous?.saldo || 0);
 
   return [
     {
@@ -1125,6 +1242,32 @@ function buildPreviousMonthComparison({ selectedMonth, expenses, incomes, curren
   };
 }
 
+function buildPreviousMonthComparisonFromSummary(summary, selectedMonth) {
+  const previousMonth = getPreviousMonthLabel(selectedMonth);
+  if (!previousMonth) {
+    return { label: "Confronto non disponibile", value: "", trend: "neutral" };
+  }
+
+  const previous = findIncomeExpenseSummaryEntry(summary, previousMonth);
+  if (!previous) {
+    return { label: `Rispetto a ${formatMonthHeading(previousMonth)}`, value: "Confronto non disponibile", trend: "neutral" };
+  }
+
+  const current = findIncomeExpenseSummaryEntry(summary, selectedMonth);
+  const previousSavings = Number(previous?.saldo || 0);
+  const currentSavings = Number(current?.saldo || 0);
+  if (previousSavings === 0) {
+    return { label: `Rispetto a ${formatMonthHeading(previousMonth)}`, value: "Confronto non disponibile", trend: "neutral" };
+  }
+
+  const percentage = ((currentSavings - previousSavings) / Math.abs(previousSavings)) * 100;
+  return {
+    label: `Rispetto a ${formatMonthHeading(previousMonth)}`,
+    value: `${percentage >= 0 ? "+" : ""}${percentage.toLocaleString("it-IT", { maximumFractionDigits: 1 })}%`,
+    trend: percentage >= 0 ? "positive" : "negative",
+  };
+}
+
 function buildSavingsNote(savings) {
   if (savings > 0) {
     return "Margine positivo rispetto alle uscite.";
@@ -1266,6 +1409,48 @@ function buildCategoryDistributionChart(expenses, currentUsername) {
       percentage: total ? Math.round((entry.value / total) * 100) : 0,
       color: entry.color,
     }));
+}
+
+function buildCategoryDistributionFromSummary(summary) {
+  if (!summary.length) {
+    return [];
+  }
+
+  const total = summary.reduce((sum, item) => sum + Number(item.totale || 0), 0);
+  const colors = ["#63d72a", "#f59e0b", "#38bdf8", "#f97316", "#a78bfa", "#fb7185"];
+
+  return summary
+    .slice(0, 6)
+    .map((item, index) => ({
+      label: item.category,
+      value: Number(item.totale || 0),
+      color: colors[index % colors.length],
+      percentage: total ? Math.round((Number(item.totale || 0) / total) * 100) : 0,
+      payload: {
+        label: item.category,
+        value: Number(item.totale || 0),
+        color: colors[index % colors.length],
+      },
+    }));
+}
+
+function buildMonthlyTrendFromSummary(summary, selectedMonth) {
+  if (!summary.length) {
+    return [{ label: "Nessun giorno", entrate: null, spese: null }];
+  }
+
+  const active = findIncomeExpenseSummaryEntry(summary, selectedMonth);
+  return [
+    {
+      label: formatMonthHeading(selectedMonth) || "Periodo attuale",
+      entrate: active ? Number(active.entrate || 0) : 0,
+      spese: active ? Number(active.uscite || 0) : 0,
+    },
+  ];
+}
+
+function findIncomeExpenseSummaryEntry(summary, monthLabel) {
+  return summary.find((item) => item.month_label === monthLabel) || null;
 }
 
 function CategoryIcon({ label }) {
