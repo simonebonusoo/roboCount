@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import base64
+import calendar
 from datetime import date
-from html import escape
 from pathlib import Path
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 from database import initialize_database
 from services import (
@@ -16,24 +15,20 @@ from services import (
     apply_filters,
     apply_income_filters,
     authenticate_user,
-    build_calendar_data,
     build_category_summary,
     build_dashboard_metrics,
     build_income_vs_expense_summary,
     create_expense,
     create_income,
-    compute_couple_balance,
     delete_income,
     delete_category,
     delete_expense,
     export_expenses_to_csv,
     export_expenses_to_pdf,
-    filter_couple_balance_expenses,
     format_currency,
     compute_balance,
     get_categories,
     get_expense_by_id,
-    get_shared_expenses,
     get_income_by_id,
     get_expenses,
     get_incomes,
@@ -44,7 +39,6 @@ from services import (
     get_visible_incomes,
     get_month_options,
     update_expense,
-    update_expense_settled,
     update_income,
     update_user_profile,
     validate_expense_data,
@@ -55,13 +49,6 @@ from ui_helpers import close_section, open_section, render_topbar, require_authe
 
 
 st.set_page_config(page_title="Monitor Spese", page_icon="€", layout="wide")
-
-EXPENSE_LIVE_SEARCH = components.declare_component(
-    "expense_live_search",
-    path=str(Path(__file__).with_name("components") / "live_search"),
-)
-EXPENSE_SEARCH_RESET_SIGNAL = "__expense_search_reset__"
-EXPENSE_SEARCH_CONFIRM_PREFIX = "__expense_search_confirm__::"
 
 
 MONTH_NAMES = {
@@ -78,22 +65,6 @@ MONTH_NAMES = {
     "11": "Novembre",
     "12": "Dicembre",
 }
-
-
-def render_expense_live_search(value: str, key: str, placeholder: str) -> str:
-    component_value = EXPENSE_LIVE_SEARCH(
-        value=value,
-        placeholder=placeholder,
-        key=key,
-        default=value,
-    )
-    if component_value is None:
-        return value
-    return str(component_value)
-
-
-def render_live_search(value: str, key: str, placeholder: str) -> str:
-    return render_expense_live_search(value=value, key=key, placeholder=placeholder)
 
 
 def format_month_heading(month_label: str) -> str:
@@ -125,43 +96,6 @@ def shift_month_label(month_label: str, delta: int) -> str:
         year += 1
 
     return f"{year}-{month:02d}"
-
-
-def clear_page_navigation_intent() -> None:
-    st.session_state.page = "home"
-    st.session_state.expense_filter = None
-
-
-def queue_sidebar_filter_overrides(**overrides: str) -> None:
-    pending = dict(st.session_state.get("pending_sidebar_filter_overrides", {}))
-    pending.update({key: value for key, value in overrides.items() if value is not None})
-    st.session_state.pending_sidebar_filter_overrides = pending
-
-
-def navigate_to_expenses(expense_filter: str = "tutte") -> None:
-    st.session_state.page = "uscite"
-    st.session_state.expense_filter = expense_filter
-    st.session_state.current_section = "Uscite"
-    st.session_state.pending_section_navigation_sync = True
-    queue_sidebar_filter_overrides(expense_type="Tutte")
-
-
-def navigate_to_couple_balance() -> None:
-    st.session_state.page = "saldo_coppia"
-    st.session_state.expense_filter = None
-    st.session_state.current_section = "Saldo di coppia"
-    st.session_state.pending_section_navigation_sync = True
-    st.session_state.expense_edit_mode = False
-    clear_expense_delete_mode()
-    queue_sidebar_filter_overrides(expense_type="Tutte")
-
-
-def build_couple_balance_label(balance: float) -> str:
-    if balance < 0:
-        return f"Devo {format_currency(abs(balance))}"
-    if balance > 0:
-        return f"Mi devono {format_currency(balance)}"
-    return "Siamo in pari"
 
 
 CATEGORY_ICONS = {
@@ -200,11 +134,8 @@ def inject_styles() -> None:
                     linear-gradient(180deg, #fbf7f2 0%, #f3ede4 100%);
                 color: var(--text);
             }
-            header[data-testid="stHeader"] {
-                display: none !important;
-            }
             .block-container {
-                padding-top: 0.32rem;
+                padding-top: 0.85rem;
                 padding-bottom: 2.5rem;
                 max-width: 1320px;
             }
@@ -227,64 +158,38 @@ def inject_styles() -> None:
                 margin: 0 0 0.2rem 0;
             }
             .expense-total-sticky {
-                position: relative;
-                top: auto;
+                position: sticky;
+                top: 0.55rem;
                 z-index: 20;
                 display: flex;
-                flex-direction: column;
-                align-items: flex-end;
-                gap: 0.42rem;
                 justify-content: flex-end;
-                margin: 0;
+                margin: 0.25rem 0 0.45rem 0;
                 pointer-events: none;
-                transform: translateY(-0.18rem);
             }
             .expense-total-pill {
                 display: inline-flex;
                 align-items: center;
                 gap: 0.55rem;
-                min-height: 46px;
-                height: 46px;
-                width: 196px;
-                min-width: 196px;
-                max-width: 196px;
-                padding: 0.5rem 1.05rem;
+                padding: 0.46rem 0.78rem;
                 border-radius: 999px;
-                background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dark) 100%);
-                border: 1px solid transparent;
-                box-shadow: 0 8px 18px rgba(139, 67, 35, 0.18);
+                background: rgba(255, 253, 250, 0.94);
+                border: 1px solid var(--border);
+                box-shadow: 0 10px 24px rgba(70, 43, 22, 0.08);
+                backdrop-filter: blur(10px);
                 pointer-events: none;
-                justify-content: center;
-                white-space: nowrap;
             }
             .expense-total-label {
-                color: rgba(255, 255, 255, 0.82);
-                font-size: 0.8rem;
+                color: var(--muted);
+                font-size: 0.76rem;
                 text-transform: uppercase;
                 letter-spacing: 0.06em;
                 line-height: 1;
             }
             .expense-total-value {
-                color: white;
-                font-size: 1.02rem;
-                font-weight: 600;
+                color: var(--text);
+                font-size: 0.98rem;
+                font-weight: 700;
                 line-height: 1;
-            }
-            .expense-balance-pill {
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                min-height: 34px;
-                padding: 0.38rem 0.82rem;
-                border-radius: 999px;
-                background: rgba(255, 253, 250, 0.92);
-                border: 1px solid rgba(180, 93, 52, 0.18);
-                box-shadow: 0 6px 14px rgba(139, 67, 35, 0.08);
-                color: var(--accent-dark);
-                font-size: 0.82rem;
-                font-weight: 600;
-                line-height: 1;
-                white-space: nowrap;
             }
             .expense-list {
                 display: flex;
@@ -332,12 +237,6 @@ def inject_styles() -> None:
                 font-weight: 700;
                 white-space: nowrap;
             }
-            .expense-cell-amount-self {
-                color: var(--accent);
-            }
-            .expense-cell-amount-partner {
-                color: var(--muted);
-            }
             div.st-key-section_navigation_shell {
                 position: sticky;
                 top: 0.4rem;
@@ -352,57 +251,13 @@ def inject_styles() -> None:
                 background: transparent !important;
                 box-shadow: none !important;
             }
-            section[data-testid="stSidebar"],
-            button[kind="header"][data-testid="stSidebarCollapsedControl"] {
-                display: none !important;
-            }
-            .home-toolbar-shell {
-                display: flex;
-                justify-content: flex-end;
-                align-items: center;
-                margin: 0.16rem 0 0.82rem 0;
-            }
-            div.st-key-home_toolbar_actions > div,
-            div.st-key-home_toolbar_actions div[data-testid="stVerticalBlock"],
-            div.st-key-home_toolbar_actions div[data-testid="stElementContainer"] {
-                background: transparent !important;
-                box-shadow: none !important;
-            }
-            div.st-key-home_toolbar_actions button[kind="secondary"],
-            div.st-key-home_toolbar_actions div.stButton > button,
-            div.st-key-home_filter_popover button[kind="secondary"],
-            div.st-key-home_filter_popover div.stButton > button {
-                min-width: 38px !important;
-                width: 38px !important;
-                min-height: 38px !important;
-                height: 38px !important;
-                border-radius: 999px !important;
-                padding: 0 !important;
-                background: rgba(255, 251, 246, 0.96) !important;
-                color: var(--text) !important;
-                border: 1px solid #e4d7c5 !important;
-                box-shadow: none !important;
-            }
-            div.st-key-home_filter_popover div[data-testid="stPopover"] {
-                min-width: 320px;
-            }
-            .home-filter-count {
-                color: var(--muted);
-                font-size: 0.82rem;
-                font-weight: 500;
-                margin-top: 0.5rem;
-            }
             div.st-key-expense_fixed_stack {
-                position: relative;
+                position: sticky;
+                top: 4.9rem;
                 z-index: 30;
-                padding: 0.1rem 0 0 0;
-                display: flex;
-                flex-direction: column;
-                flex: 0 0 auto;
-                min-height: 0;
+                padding: 0.1rem 0 0.45rem 0;
                 background: transparent !important;
                 backdrop-filter: none !important;
-                box-shadow: none !important;
             }
             div.st-key-expense_fixed_stack > div,
             div.st-key-expense_fixed_stack div[data-testid="stVerticalBlock"],
@@ -410,430 +265,47 @@ def inject_styles() -> None:
                 background: transparent !important;
                 box-shadow: none !important;
             }
-            div.st-key-expense_fixed_stack > div,
-            div.st-key-income_fixed_stack > div {
-                width: 100%;
-            }
-            div.st-key-expense_month_row,
-            div.st-key-income_month_row,
-            div.st-key-expense_main_block_frame,
-            div.st-key-income_main_block_frame,
-            div.st-key-expense_toolbar_frame,
-            div.st-key-income_toolbar_frame,
-            div.st-key-expense_controls_row,
-            div.st-key-income_controls_row {
-                margin: 0;
-                padding: 0;
-                background: transparent !important;
-            }
-            div.st-key-expense_month_row,
-            div.st-key-income_month_row {
-                width: 100%;
-                margin: 0 0 0.58rem 0;
-            }
-            div.st-key-expense_main_block_frame > div,
-            div.st-key-expense_main_block_frame div[data-testid="stVerticalBlock"],
-            div.st-key-expense_main_block_frame div[data-testid="stElementContainer"],
-            div.st-key-income_main_block_frame > div,
-            div.st-key-income_main_block_frame div[data-testid="stVerticalBlock"],
-            div.st-key-income_main_block_frame div[data-testid="stElementContainer"],
-            div.st-key-expense_toolbar_frame > div,
-            div.st-key-expense_toolbar_frame div[data-testid="stVerticalBlock"],
-            div.st-key-expense_toolbar_frame div[data-testid="stElementContainer"],
-            div.st-key-income_toolbar_frame > div,
-            div.st-key-income_toolbar_frame div[data-testid="stVerticalBlock"],
-            div.st-key-income_toolbar_frame div[data-testid="stElementContainer"],
-            div.st-key-expense_controls_row > div,
-            div.st-key-expense_controls_row div[data-testid="stVerticalBlock"],
-            div.st-key-expense_controls_row div[data-testid="stElementContainer"],
-            div.st-key-income_controls_row > div,
-            div.st-key-income_controls_row div[data-testid="stVerticalBlock"],
-            div.st-key-income_controls_row div[data-testid="stElementContainer"] {
-                background: transparent !important;
-                box-shadow: none !important;
-            }
-            div.st-key-expense_main_block_frame,
-            div.st-key-income_main_block_frame {
-                width: 100%;
-                min-height: 5.10rem;
-                height: 5.10rem;
-                max-height: 5.10rem;
-                overflow: hidden;
-                display: flex;
-                align-items: flex-start;
-                margin: 0 0 0.12rem 0;
-            }
-            div.st-key-expense_toolbar_frame,
-            div.st-key-income_toolbar_frame {
-                width: min(34rem, 100%);
-                max-width: 34rem;
-                min-height: 2.34rem;
-                height: 2.34rem;
-                max-height: 2.34rem;
-                display: flex;
-                align-items: center;
-                box-shadow: inset 0 -1px 0 rgba(207, 138, 93, 0.18);
-            }
-            div.st-key-expense_header_content,
-            div.st-key-income_header_content {
-                width: min(34rem, 100%);
-                max-width: 34rem;
-                margin: 0;
-                padding: 0;
-                display: grid;
-                grid-template-rows: 2.72rem 1.98rem;
-                row-gap: 0.40rem;
-                align-content: start;
-                min-height: 5.10rem;
-                height: 5.10rem;
-                max-height: 5.10rem;
-                overflow: hidden;
-                background: transparent !important;
-            }
-            div.st-key-expense_header_content > div,
-            div.st-key-expense_header_content div[data-testid="stVerticalBlock"],
-            div.st-key-expense_header_content div[data-testid="stElementContainer"],
-            div.st-key-income_header_content > div,
-            div.st-key-income_header_content div[data-testid="stVerticalBlock"],
-            div.st-key-income_header_content div[data-testid="stElementContainer"] {
-                background: transparent !important;
-                box-shadow: none !important;
-            }
-            div.st-key-expense_header_content > div,
-            div.st-key-income_header_content > div,
-            div.st-key-expense_header_content div[data-testid="stVerticalBlock"],
-            div.st-key-income_header_content div[data-testid="stVerticalBlock"] {
-                min-height: 0;
-                height: 100%;
-            }
-            div.st-key-expense_primary_tabs_row,
-            div.st-key-expense_secondary_tabs_row {
-                width: 100%;
-                margin: 0;
-                padding: 0;
-                background: transparent !important;
-                overflow: hidden;
-            }
-            div.st-key-expense_primary_tabs_row {
-                min-height: 2.72rem;
-                height: 2.72rem;
-                max-height: 2.72rem;
-            }
-            div.st-key-expense_secondary_tabs_row {
-                min-height: 1.98rem;
-                height: 1.98rem;
-                max-height: 1.98rem;
-            }
-            div.st-key-expense_primary_tabs_row > div,
-            div.st-key-expense_primary_tabs_row div[data-testid="stVerticalBlock"],
-            div.st-key-expense_primary_tabs_row div[data-testid="stElementContainer"],
-            div.st-key-expense_secondary_tabs_row > div,
-            div.st-key-expense_secondary_tabs_row div[data-testid="stVerticalBlock"],
-            div.st-key-expense_secondary_tabs_row div[data-testid="stElementContainer"] {
-                background: transparent !important;
-                box-shadow: none !important;
-                min-height: 0;
-                height: 100%;
-            }
-            div.st-key-expense_controls_row {
-                margin: 0 0 0.18rem 0;
-                min-height: 2.34rem;
-                height: 2.34rem;
-            }
-            div.st-key-income_controls_row {
-                margin: 0 0 0.18rem 0;
-                min-height: 2.34rem;
-                height: 2.34rem;
-            }
-            div.st-key-expense_controls_row div[data-testid="stHorizontalBlock"],
-            div.st-key-income_controls_row div[data-testid="stHorizontalBlock"] {
-                align-items: center;
-                min-height: 2.34rem;
-            }
-            div.st-key-expense_section_shell {
-                display: flex;
-                flex-direction: column;
-                min-height: 0;
-                height: auto;
-                max-height: none;
-                overflow: visible;
-                background: transparent !important;
-                box-shadow: none !important;
-            }
-            div.st-key-expense_lower_shell {
-                display: flex;
-                flex-direction: column;
-                min-height: 0;
-                flex: 0 0 auto;
-                background: transparent !important;
-            }
-            div.st-key-expense_lower_shell > div,
-            div.st-key-expense_lower_shell div[data-testid="stVerticalBlock"],
-            div.st-key-expense_lower_shell div[data-testid="stElementContainer"] {
-                background: transparent !important;
-                box-shadow: none !important;
-                min-height: 0;
-            }
             div.st-key-expense_feed_scroll {
-                flex: 0 0 auto;
-                min-height: auto;
-                height: auto;
-                max-height: none;
-                overflow: visible;
-                padding-right: 0;
-                padding-bottom: 0;
-                margin-top: 0;
+                height: calc(100vh - 350px);
+                max-height: calc(100vh - 350px);
+                overflow-y: auto;
+                overflow-x: hidden;
+                padding-right: 0.18rem;
+                scrollbar-width: thin;
             }
             div.st-key-expense_feed_scroll > div {
-                min-height: 0;
-                padding-top: 0;
+                padding-top: 0.1rem;
             }
-            div.st-key-income_fixed_stack {
-                position: relative;
-                z-index: 30;
-                display: flex;
-                flex-direction: column;
-                flex: 0 0 auto;
-                min-height: 0;
-                padding: 0.1rem 0 0 0;
-                background: transparent !important;
-                backdrop-filter: none !important;
-                box-shadow: none !important;
-            }
-            div.st-key-income_fixed_stack > div,
-            div.st-key-income_fixed_stack div[data-testid="stVerticalBlock"],
-            div.st-key-income_fixed_stack div[data-testid="stElementContainer"] {
-                background: transparent !important;
-                box-shadow: none !important;
-            }
-            div.st-key-income_section_shell {
-                display: flex;
-                flex-direction: column;
-                min-height: 0;
-                height: auto;
-                max-height: none;
-                overflow: visible;
-                background: transparent !important;
-                box-shadow: none !important;
-            }
-            div.st-key-income_lower_shell {
-                display: flex;
-                flex-direction: column;
-                min-height: 0;
-                flex: 0 0 auto;
-                background: transparent !important;
-            }
-            div.st-key-income_lower_shell > div,
-            div.st-key-income_lower_shell div[data-testid="stVerticalBlock"],
-            div.st-key-income_lower_shell div[data-testid="stElementContainer"] {
-                background: transparent !important;
-                box-shadow: none !important;
-                min-height: 0;
-            }
-            div.st-key-income_feed_scroll {
-                flex: 0 0 auto;
-                min-height: auto;
-                height: auto;
-                max-height: none;
-                overflow: visible;
-                padding-right: 0;
-                padding-bottom: 0;
-                margin-top: 0;
-            }
-            div.st-key-income_feed_scroll > div {
-                min-height: 0;
-                padding-top: 0;
-            }
-            div.st-key-income_feed_stack,
-            div.st-key-income_feed_scroll {
-                padding-top: 0;
-            }
-            div.st-key-income_feed_stack > div,
-            div.st-key-income_feed_stack div[data-testid="stVerticalBlock"],
-            div.st-key-income_feed_stack div[data-testid="stElementContainer"],
-            div.st-key-income_feed_scroll div[data-testid="stVerticalBlock"],
-            div.st-key-income_feed_scroll div[data-testid="stElementContainer"] {
-                background: transparent !important;
-                box-shadow: none !important;
-            }
-            div.st-key-home_hero_shell {
-                border-radius: 24px;
-                background:
-                    radial-gradient(circle at 78% 28%, rgba(99, 223, 255, 0.18), transparent 20%),
-                    radial-gradient(circle at 72% 78%, rgba(240, 191, 85, 0.18), transparent 18%),
-                    radial-gradient(circle at bottom left, rgba(242, 203, 170, 0.12), transparent 22%),
-                    linear-gradient(135deg, #241b14 0%, #4a2c1e 48%, #8c542e 100%);
-                box-shadow: 0 16px 36px rgba(65, 32, 16, 0.12);
-                margin-bottom: 0;
-                padding: 1.2rem 1.2rem 1.15rem 1.2rem;
-                color: white;
-            }
-            .home-welcome-shell {
-                margin: 0.52rem 0 1.04rem 0.08rem;
-            }
-            .home-welcome-eyebrow {
-                color: rgba(104, 77, 56, 0.72);
-                font-size: 0.72rem;
-                text-transform: uppercase;
-                letter-spacing: 0.08em;
-                margin-bottom: 0.14rem;
-            }
-            .home-welcome-title {
-                margin: 0;
-                color: var(--text);
-                font-size: 2.1rem;
-                font-weight: 800;
-                line-height: 1.02;
-                letter-spacing: -0.03em;
-            }
-            .home-welcome-copy {
-                margin: 0.28rem 0 0 0;
-                color: var(--muted);
-                font-size: 0.98rem;
-                font-weight: 500;
-                line-height: 1.35;
-            }
-            div.st-key-home_hero_shell > div,
-            div.st-key-home_hero_shell div[data-testid="stVerticalBlock"],
-            div.st-key-home_hero_shell div[data-testid="stElementContainer"] {
-                background: transparent !important;
-                box-shadow: none !important;
-            }
-            .home-finance-panel {
-                background: linear-gradient(180deg, rgba(255, 250, 244, 0.14) 0%, rgba(255, 250, 244, 0.09) 100%);
-                border: 1px solid rgba(255, 244, 232, 0.22);
-                border-radius: 22px;
-                padding: 0.88rem;
-                box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
-                backdrop-filter: blur(10px);
-            }
-            .home-finance-head {
+            .home-counter-wrap {
                 display: flex;
                 align-items: center;
-                justify-content: space-between;
-                gap: 0.8rem;
-                margin-bottom: 0.82rem;
+                justify-content: flex-end;
+                gap: 1rem;
+                margin: 0.15rem 0 0.6rem 0;
+                padding: 0;
             }
-            .home-finance-eyebrow {
-                color: rgba(255, 246, 236, 0.72);
-                font-size: 0.72rem;
-                text-transform: uppercase;
-                letter-spacing: 0.08em;
-                margin-bottom: 0.18rem;
-            }
-            .home-finance-period {
-                color: white;
-                font-size: 1.02rem;
-                font-weight: 700;
-                line-height: 1.1;
-            }
-            .home-finance-kpi-grid {
+            .home-counter-grid {
                 display: grid;
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-                gap: 0.64rem;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 1.3rem;
+                width: 100%;
             }
-            .home-finance-card {
+            .home-counter-item {
                 min-width: 0;
-                border-radius: 18px;
-                padding: 0.82rem 0.9rem;
-                background: rgba(255, 252, 247, 0.92);
-                border: 1px solid rgba(233, 215, 196, 0.72);
-                box-shadow: 0 10px 22px rgba(34, 21, 12, 0.08);
+                text-align: right;
             }
-            .home-finance-card-balance {
-                grid-column: 1 / -1;
-                background: linear-gradient(180deg, rgba(255, 252, 247, 0.98) 0%, rgba(252, 246, 238, 0.96) 100%);
-            }
-            .home-finance-card-couple {
-                grid-column: 1 / -1;
-                background: linear-gradient(180deg, rgba(251, 245, 237, 0.98) 0%, rgba(247, 238, 228, 0.96) 100%);
-            }
-            .home-finance-card-label {
+            .home-counter-label {
                 color: var(--muted);
                 font-size: 0.72rem;
                 text-transform: uppercase;
-                letter-spacing: 0.08em;
-                margin-bottom: 0.38rem;
+                letter-spacing: 0.05em;
+                margin-bottom: 0.12rem;
             }
-            .home-finance-card-value {
+            .home-counter-value {
                 color: var(--text);
-                font-size: 1.16rem;
-                font-weight: 800;
+                font-size: 1.02rem;
+                font-weight: 700;
                 line-height: 1.05;
-                letter-spacing: -0.01em;
-            }
-            .home-finance-card-note {
-                margin-top: 0.32rem;
-                color: rgba(44, 33, 23, 0.64);
-                font-size: 0.78rem;
-                line-height: 1.25;
-            }
-            .home-finance-card-accent-expense {
-                color: var(--accent-dark);
-            }
-            .home-finance-card-accent-income {
-                color: var(--green);
-            }
-            .home-finance-card-accent-balance-positive {
-                color: var(--green);
-            }
-            .home-finance-card-accent-balance-negative {
-                color: var(--accent-dark);
-            }
-            .home-finance-card-accent-balance-neutral {
-                color: var(--text);
-            }
-            .home-finance-card-accent-couple-positive {
-                color: var(--green);
-            }
-            .home-finance-card-accent-couple-negative {
-                color: var(--accent-dark);
-            }
-            .home-finance-card-accent-couple-neutral {
-                color: var(--text);
-            }
-            div.st-key-home_finance_scope {
-                width: 100%;
-                max-width: 220px;
-                margin-top: -0.18rem;
-                margin-bottom: 0.36rem;
-            }
-            div.st-key-home_finance_scope div[data-testid="stHorizontalBlock"] {
-                gap: 0.18rem;
-            }
-            div.st-key-home_finance_scope div[data-testid="stElementContainer"],
-            div.st-key-home_finance_scope div[data-testid="stVerticalBlock"] {
-                margin: 0 !important;
-                padding: 0 !important;
-            }
-            div.st-key-home_finance_scope div.stButton > button,
-            div.st-key-home_finance_scope button[kind="secondary"],
-            div.st-key-home_finance_scope button[kind="primary"] {
-                min-height: 28px !important;
-                height: 28px !important;
-                padding: 0 0.72rem !important;
-                border-radius: 14px !important;
-                border: 1px solid rgba(255, 245, 233, 0.18) !important;
-                background: rgba(255, 248, 240, 0.08) !important;
-                color: rgba(255, 248, 240, 0.82) !important;
-                box-shadow: none !important;
-                font-size: 0.76rem !important;
-                font-weight: 600 !important;
-                letter-spacing: 0.01em !important;
-                transform: none !important;
-            }
-            div.st-key-home_finance_scope div.stButton > button[kind="primary"],
-            div.st-key-home_finance_scope button[kind="primary"] {
-                background: rgba(255, 251, 246, 0.96) !important;
-                color: var(--accent-dark) !important;
-                border-color: rgba(255, 244, 232, 0.26) !important;
-            }
-            div.st-key-home_finance_scope div.stButton > button p,
-            div.st-key-home_finance_scope button[kind="secondary"] p,
-            div.st-key-home_finance_scope button[kind="primary"] p {
-                font-size: 0.76rem !important;
-                font-weight: 600 !important;
-                line-height: 1 !important;
             }
             div[data-testid="stMetric"] {
                 background: var(--panel-strong);
@@ -866,69 +338,11 @@ def inject_styles() -> None:
             .topbar-text {
                 color: var(--muted);
                 font-size: 0.9rem;
-                display: flex;
-                align-items: center;
-                min-height: 26px;
-                line-height: 1;
-                padding-top: 0;
+                padding-top: 0.15rem;
             }
             .topbar-row {
-                padding-top: 0.52rem;
-                margin-bottom: 0.28rem;
-            }
-            div.st-key-topbar_actions {
-                display: flex;
-                justify-content: flex-end;
-                align-items: center;
-                min-height: 26px;
-                padding-top: 0;
-                position: relative;
-                top: 6px;
-            }
-            div.st-key-topbar_actions > div,
-            div.st-key-topbar_actions div[data-testid="stVerticalBlock"],
-            div.st-key-topbar_actions div[data-testid="stElementContainer"] {
-                background: transparent !important;
-                box-shadow: none !important;
-            }
-            div.st-key-topbar_profile_icon div.stButton > button,
-            div.st-key-topbar_home_icon div.stButton > button,
-            div.st-key-topbar_filter_icon button,
-            div.st-key-topbar_menu_icon button,
-            div.st-key-topbar_logout_icon div.stButton > button,
-            div.st-key-topbar_filter_icon button[kind="secondary"],
-            div.st-key-topbar_menu_icon button[kind="secondary"] {
-                min-width: 26px !important;
-                width: 26px !important;
-                min-height: 26px !important;
-                height: 26px !important;
-                border-radius: 0 !important;
-                padding: 0 !important;
-                display: inline-flex !important;
-                align-items: center !important;
-                justify-content: center !important;
-                background: transparent !important;
-                color: var(--text) !important;
-                border: none !important;
-                box-shadow: none !important;
-            }
-            div.st-key-topbar_profile_icon div.stButton > button:hover,
-            div.st-key-topbar_home_icon div.stButton > button:hover,
-            div.st-key-topbar_filter_icon button:hover,
-            div.st-key-topbar_menu_icon button:hover,
-            div.st-key-topbar_logout_icon div.stButton > button:hover {
-                background: transparent !important;
-                color: var(--accent-dark) !important;
-            }
-            div.st-key-topbar_filter_icon [data-testid="stPopover"] > div::before,
-            div.st-key-topbar_filter_icon [data-testid="stPopover"] > div::after,
-            div.st-key-topbar_menu_icon [data-testid="stPopover"] > div::before,
-            div.st-key-topbar_menu_icon [data-testid="stPopover"] > div::after {
-                display: none !important;
-            }
-            div.st-key-topbar_filter_icon button svg:last-child,
-            div.st-key-topbar_menu_icon button svg:last-child {
-                display: none !important;
+                padding-top: 0.45rem;
+                margin-bottom: 0.2rem;
             }
             .section-card {
                 background: var(--panel);
@@ -1150,115 +564,28 @@ def inject_styles() -> None:
                 text-overflow: ellipsis;
                 white-space: nowrap;
             }
-            div.st-key-income_header_info {
-                width: 100%;
-                max-width: none;
-                margin: 0.02rem 0 0 0;
-                padding: 0.24rem 0.24rem 0.46rem 0.24rem;
-                min-height: 4.72rem;
+            .income-header {
                 display: flex;
-                flex-direction: column;
+                align-items: center;
                 justify-content: flex-start;
-                border-radius: 22px;
-                background: rgba(255, 250, 244, 0.72);
-                border: 1px solid rgba(196, 170, 145, 0.34);
-                box-shadow: 0 10px 24px rgba(70, 43, 22, 0.05);
-                overflow: hidden;
+                gap: 1rem;
+                margin-bottom: 1rem;
             }
-            div.st-key-income_info_tabs_row div[data-testid="stHorizontalBlock"] {
-                align-items: stretch;
-                gap: 0.18rem;
-            }
-            div.st-key-income_info_tabs_row div[data-testid="column"] {
-                min-width: 0;
-            }
-            div.st-key-income_info_tabs_row div[data-testid="column"] > div {
-                width: 100%;
-            }
-            div.st-key-income_info_source_tab > button,
-            div.st-key-income_info_source_tab div.stButton > button,
-            div.st-key-income_info_latest_tab > button,
-            div.st-key-income_info_latest_tab div.stButton > button {
-                width: 100% !important;
-                min-width: 0 !important;
-                min-height: 34px !important;
-                height: 34px !important;
-                padding: 0.28rem 0.7rem !important;
-                border-radius: 999px !important;
-                border: none !important;
-                box-shadow: none !important;
-                background: transparent !important;
-                color: rgba(47, 36, 25, 0.78) !important;
-                display: inline-flex !important;
-                align-items: center !important;
-                justify-content: center !important;
-                white-space: nowrap !important;
-                line-height: 1 !important;
-                text-align: center !important;
-            }
-            div.st-key-income_info_source_tab > button p,
-            div.st-key-income_info_source_tab div.stButton > button p,
-            div.st-key-income_info_latest_tab > button p,
-            div.st-key-income_info_latest_tab div.stButton > button p {
-                margin: 0 !important;
-                font-size: 0.8rem !important;
-                font-weight: 500 !important;
-                line-height: 1 !important;
-                text-align: center !important;
-                white-space: nowrap !important;
-            }
-            div.st-key-income_info_source_tab > button:hover,
-            div.st-key-income_info_source_tab div.stButton > button:hover,
-            div.st-key-income_info_latest_tab > button:hover,
-            div.st-key-income_info_latest_tab div.stButton > button:hover {
-                background: rgba(255, 252, 247, 0.58) !important;
-                color: var(--text) !important;
-                transform: none !important;
-            }
-            div.st-key-income_info_source_tab > button[kind="primary"],
-            div.st-key-income_info_source_tab div.stButton > button[kind="primary"],
-            div.st-key-income_info_latest_tab > button[kind="primary"],
-            div.st-key-income_info_latest_tab div.stButton > button[kind="primary"] {
-                background: linear-gradient(135deg, #cf8a5d 0%, #b56b42 100%) !important;
-                color: white !important;
-            }
-            div.st-key-income_info_source_tab > button[kind="primary"] p,
-            div.st-key-income_info_source_tab div.stButton > button[kind="primary"] p,
-            div.st-key-income_info_latest_tab > button[kind="primary"] p,
-            div.st-key-income_info_latest_tab div.stButton > button[kind="primary"] p {
-                color: white !important;
-            }
-            div.st-key-income_info_value_row {
-                margin-top: 0.18rem;
-                min-height: 1.28rem;
-            }
-            .income-info-value-grid {
-                display: grid;
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-                align-items: center;
-                gap: 0.18rem;
-                min-height: 1.28rem;
-                width: 100%;
-            }
-            .income-info-value-cell {
+            .income-meta {
                 display: flex;
                 align-items: center;
-                justify-content: center;
-                min-width: 0;
-                min-height: 1.28rem;
-            }
-            .income-info-active-value {
-                margin: 0;
-                color: var(--text);
-                font-size: 0.8rem;
+                justify-content: flex-start;
+                gap: 1rem;
+                color: var(--muted);
+                font-size: 0.88rem;
                 font-weight: 500;
                 line-height: 1;
-                text-align: center;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                padding: 0 0.24rem;
-                width: 100%;
+                flex-wrap: wrap;
+                text-align: left;
+            }
+            .income-meta strong {
+                color: var(--text);
+                font-weight: 600;
             }
             .income-tools-row {
                 display: flex;
@@ -1362,7 +689,7 @@ def inject_styles() -> None:
                 display: flex;
                 flex-direction: column;
                 gap: 0;
-                margin-top: 0;
+                margin-top: 0.15rem;
             }
             .income-card {
                 border-bottom: 1px solid rgba(196, 170, 145, 0.45);
@@ -1400,151 +727,42 @@ def inject_styles() -> None:
                 justify-content: flex-end;
                 white-space: nowrap;
             }
-            div.st-key-hero_layout_shell > div,
-            div.st-key-hero_layout_shell div[data-testid="stVerticalBlock"],
-            div.st-key-hero_layout_shell div[data-testid="stElementContainer"] {
-                background: transparent !important;
-                box-shadow: none !important;
-            }
             .hero-layout {
-                width: 100%;
-            }
-            .hero-left-stack,
-            .home-finance-column {
-                width: 100%;
-                min-width: 0;
-            }
-            .hero-left-stack {
                 display: flex;
-                flex-direction: column;
+                justify-content: space-between;
                 align-items: center;
-                gap: 0.46rem;
+                gap: 1.2rem;
+                flex-wrap: wrap;
             }
             .hero-visual {
-                width: 100%;
-                min-width: 0;
+                flex: 1 1 260px;
+                min-width: 220px;
                 display: flex;
-                justify-content: center;
-                align-items: flex-start;
+                justify-content: flex-end;
+                align-items: center;
             }
             .hero-visual-frame {
                 position: relative;
-                width: 100%;
-                max-width: 468px;
-                aspect-ratio: 3 / 2;
-                height: auto;
+                width: min(100%, 320px);
                 display: flex;
                 justify-content: center;
                 align-items: center;
-                overflow: hidden;
-                border-radius: 28px;
-                background: #eef0f4;
-                box-shadow: 0 18px 36px rgba(18, 13, 9, 0.10);
             }
             .hero-visual-frame::before {
-                content: none;
+                content: "";
+                position: absolute;
+                inset: 14% 12% 16% 12%;
+                border-radius: 999px;
+                background: radial-gradient(circle, rgba(96, 229, 255, 0.26) 0%, rgba(96, 229, 255, 0.08) 42%, transparent 72%);
+                filter: blur(18px);
             }
             .hero-image {
                 position: relative;
                 z-index: 1;
                 width: 100%;
-                height: 100%;
-                object-fit: cover;
-                object-position: center center;
-                border-radius: 28px;
-                background: #eef0f4;
-                mix-blend-mode: normal;
-                filter: brightness(1.02) saturate(1.02);
-            }
-            .home-summary-mini {
-                width: 100%;
-                max-width: 468px;
-                margin-left: auto;
-                margin-right: auto;
-                padding: 0.64rem 0.74rem 0.58rem 0.74rem;
-                border-radius: 15px;
-                background: linear-gradient(180deg, rgba(255, 248, 240, 0.07) 0%, rgba(255, 248, 240, 0.03) 100%);
-                border: 1px solid rgba(255, 244, 232, 0.12);
-                box-shadow: none;
-            }
-            .home-summary-mini-eyebrow {
-                color: rgba(255, 246, 236, 0.72);
-                font-size: 0.68rem;
-                text-transform: uppercase;
-                letter-spacing: 0.08em;
-                margin-bottom: 0.18rem;
-            }
-            .home-summary-mini-copy {
-                color: rgba(255, 244, 232, 0.82);
-                font-size: 0.76rem;
-                line-height: 1.32;
-                margin-bottom: 0.48rem;
-            }
-            div.st-key-home_summary_cta {
-                width: 100%;
-                max-width: 404px;
-                margin-left: auto;
-                margin-right: auto;
-                margin-top: 0.1rem;
-            }
-            div.st-key-home_summary_cta div.stButton > button,
-            div.st-key-home_summary_cta button[kind="secondary"] {
-                width: 100% !important;
-                min-height: 34px !important;
-                height: 34px !important;
-                border-radius: 12px !important;
-                padding: 0 0.82rem !important;
-                background: rgba(255, 248, 240, 0.96) !important;
-                color: var(--accent-dark) !important;
-                border: 1px solid rgba(255, 244, 232, 0.18) !important;
-                box-shadow: 0 6px 14px rgba(34, 21, 12, 0.07) !important;
-                font-size: 0.8rem !important;
-                font-weight: 700 !important;
-                transform: none !important;
-            }
-            div.st-key-home_summary_cta div.stButton > button:hover,
-            div.st-key-home_summary_cta button[kind="secondary"]:hover {
-                background: rgba(255, 251, 246, 0.98) !important;
-                color: var(--accent-dark) !important;
-            }
-            div.st-key-home_summary_cta div.stButton > button p,
-            div.st-key-home_summary_cta button[kind="secondary"] p {
-                color: var(--accent-dark) !important;
-                font-size: 0.8rem !important;
-                font-weight: 700 !important;
-                line-height: 1 !important;
-            }
-            .home-hero-copy-shell {
-                padding: 1.02rem 0.35rem 0.15rem 0.35rem;
-            }
-            .couple-balance-status-pill {
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                min-height: 34px;
-                padding: 0.3rem 0.72rem;
-                border-radius: 999px;
-                font-size: 0.8rem;
-                font-weight: 700;
-                line-height: 1;
-                text-transform: uppercase;
-                letter-spacing: 0.03em;
-                white-space: nowrap;
-            }
-            .couple-balance-status-open {
-                color: var(--accent-dark);
-                background: rgba(180, 93, 52, 0.12);
-                border: 1px solid rgba(180, 93, 52, 0.18);
-            }
-            .couple-balance-status-settled {
-                color: var(--green);
-                background: rgba(79, 122, 92, 0.12);
-                border: 1px solid rgba(79, 122, 92, 0.18);
-            }
-            .couple-balance-toggle-label {
-                color: var(--muted);
-                font-size: 0.86rem;
-                font-weight: 600;
+                max-width: 300px;
+                object-fit: contain;
+                filter: drop-shadow(0 20px 28px rgba(18, 13, 9, 0.22));
             }
             div[data-testid="stDialog"] div[role="dialog"] {
                 max-width: 760px !important;
@@ -1565,28 +783,15 @@ def inject_styles() -> None:
                 gap: 0.68rem !important;
             }
             @media (max-width: 900px) {
-                .hero-meta {
-                    max-width: 100%;
-                }
-                .hero-visual,
-                .home-finance-column,
-                .hero-left-stack {
-                    width: 100%;
-                    min-width: 0;
-                }
-                .home-summary-mini,
-                div.st-key-home_summary_cta {
-                    max-width: 100%;
-                }
-                .home-finance-head {
-                    flex-direction: column;
+                .hero-layout {
                     align-items: flex-start;
                 }
-                .home-finance-kpi-grid {
-                    grid-template-columns: 1fr;
+                .hero-visual {
+                    width: 100%;
+                    justify-content: center;
                 }
-                .home-finance-card-balance {
-                    grid-column: auto;
+                .hero-meta {
+                    max-width: 100%;
                 }
             }
             div[data-baseweb="select"] > div,
@@ -1732,12 +937,9 @@ def inject_styles() -> None:
                 display: inline-flex;
                 flex-wrap: wrap;
                 gap: 0.9rem;
-                width: 100%;
-                align-content: flex-start;
             }
             div.st-key-expense_category_filter div[data-testid="stRadio"] label[data-baseweb="radio"] {
                 min-width: auto;
-                margin-right: 0 !important;
                 padding: 0.14rem 0 0.22rem 0;
                 background: transparent !important;
                 border: none !important;
@@ -1751,9 +953,8 @@ def inject_styles() -> None:
             }
             div.st-key-expense_category_filter div[data-testid="stRadio"] p {
                 font-size: 0.88rem;
-                font-weight: 600;
+                font-weight: 500;
                 color: rgba(44, 33, 23, 0.72);
-                white-space: nowrap;
             }
             div.st-key-expense_category_filter div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) {
                 background: transparent !important;
@@ -1787,11 +988,6 @@ def inject_styles() -> None:
                 display: inline-flex;
                 flex-wrap: wrap;
                 gap: 0.18rem;
-                width: fit-content;
-                max-width: 100%;
-            }
-            div.st-key-expense_type_filter div[data-testid="stRadio"] label[data-baseweb="radio"] {
-                margin-right: 0 !important;
             }
             div.st-key-expense_type_filter div[data-testid="stRadio"] label[data-baseweb="radio"] {
                 min-width: 110px;
@@ -1805,138 +1001,13 @@ def inject_styles() -> None:
                 background: linear-gradient(135deg, #cf8a5d 0%, #b56b42 100%);
                 box-shadow: none;
             }
-            div.st-key-couple_balance_status_filter div[data-testid="stRadio"] > div {
-                background: rgba(255, 252, 247, 0.52);
-                border: none;
-                box-shadow: none;
-                padding: 0.18rem;
-                border-radius: 999px;
-                display: inline-flex;
-                flex-wrap: wrap;
-                gap: 0.18rem;
-                width: fit-content;
-                max-width: 100%;
-            }
-            div.st-key-couple_balance_status_filter div[data-testid="stRadio"] label[data-baseweb="radio"] {
-                margin-right: 0 !important;
-                min-width: 110px;
-                padding: 0.3rem 0.7rem;
-            }
-            div.st-key-couple_balance_status_filter div[data-testid="stRadio"] p {
-                font-size: 0.84rem;
-                font-weight: 500;
-            }
-            div.st-key-couple_balance_status_filter div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) {
-                background: linear-gradient(135deg, #cf8a5d 0%, #b56b42 100%);
-                box-shadow: none;
-            }
-            .expense-tools-divider {
-                width: 100%;
-                height: 1px;
-                margin: 0;
-                background: linear-gradient(
-                    90deg,
-                    rgba(207, 138, 93, 0) 0%,
-                    rgba(207, 138, 93, 0.12) 18%,
-                    rgba(207, 138, 93, 0.18) 50%,
-                    rgba(207, 138, 93, 0.12) 82%,
-                    rgba(207, 138, 93, 0) 100%
-                );
-            }
-            div.st-key-expense_list_separator_row,
-            div.st-key-income_list_separator_row {
-                width: 100%;
-                margin: 0 0 0.22rem 0;
-                padding: 0;
-                background: transparent !important;
-            }
-            div.st-key-expense_list_separator_row > div,
-            div.st-key-expense_list_separator_row div[data-testid="stVerticalBlock"],
-            div.st-key-expense_list_separator_row div[data-testid="stElementContainer"],
-            div.st-key-income_list_separator_row > div,
-            div.st-key-income_list_separator_row div[data-testid="stVerticalBlock"],
-            div.st-key-income_list_separator_row div[data-testid="stElementContainer"] {
-                background: transparent !important;
-                box-shadow: none !important;
-                padding: 0 !important;
-                margin: 0 !important;
-            }
             div.st-key-expense_tools_row {
-                margin: 0;
+                margin: 0.22rem 0 0.22rem 0;
             }
             div.st-key-expense_tools_row div[data-testid="stHorizontalBlock"] {
                 justify-content: flex-start;
                 align-items: center;
-                gap: 0.2rem;
-                flex-wrap: nowrap;
-            }
-            div.st-key-expense_tools_row button {
-                line-height: 1 !important;
-            }
-            div.st-key-expense_search_reset_button > button,
-            div.st-key-expense_search_reset_button div.stButton > button {
-                min-width: 24px !important;
-                width: 24px !important;
-                min-height: 24px !important;
-                height: 24px !important;
-                padding: 0 !important;
-                border-radius: 0 !important;
-                background: transparent !important;
-                color: rgba(46, 38, 31, 0.86) !important;
-                border: none !important;
-                box-shadow: none !important;
-                font-size: 0.8rem !important;
-                font-weight: 500 !important;
-                line-height: 1 !important;
-                display: inline-flex !important;
-                align-items: center !important;
-                justify-content: center !important;
-                opacity: 1 !important;
-                flex-shrink: 0 !important;
-                vertical-align: middle !important;
-            }
-            div.st-key-expense_search_reset_button > button span[data-testid="stIconMaterial"],
-            div.st-key-expense_search_reset_button div.stButton > button span[data-testid="stIconMaterial"],
-            div.st-key-expense_sort_toggle > button span[data-testid="stIconMaterial"],
-            div.st-key-expense_sort_toggle div.stButton > button span[data-testid="stIconMaterial"],
-            div.st-key-expense_search_toggle > button span[data-testid="stIconMaterial"],
-            div.st-key-expense_search_toggle div.stButton > button span[data-testid="stIconMaterial"],
-            div.st-key-expense_delete_toggle > button span[data-testid="stIconMaterial"],
-            div.st-key-expense_delete_toggle div.stButton > button span[data-testid="stIconMaterial"] {
-                width: 0.8rem !important;
-                min-width: 0.8rem !important;
-                height: 0.8rem !important;
-                font-size: 0.8rem !important;
-                line-height: 1 !important;
-                display: inline-flex !important;
-                align-items: center !important;
-                justify-content: center !important;
-                vertical-align: middle !important;
-            }
-            div.st-key-expense_search_reset_button > button span[data-testid="stIconMaterial"] svg,
-            div.st-key-expense_search_reset_button div.stButton > button span[data-testid="stIconMaterial"] svg,
-            div.st-key-expense_sort_toggle > button span[data-testid="stIconMaterial"] svg,
-            div.st-key-expense_sort_toggle div.stButton > button span[data-testid="stIconMaterial"] svg,
-            div.st-key-expense_search_toggle > button span[data-testid="stIconMaterial"] svg,
-            div.st-key-expense_search_toggle div.stButton > button span[data-testid="stIconMaterial"] svg,
-            div.st-key-expense_delete_toggle > button span[data-testid="stIconMaterial"] svg,
-            div.st-key-expense_delete_toggle div.stButton > button span[data-testid="stIconMaterial"] svg {
-                width: 0.8rem !important;
-                height: 0.8rem !important;
-                display: block !important;
-            }
-            div.st-key-expense_search_reset_button > button:hover,
-            div.st-key-expense_search_reset_button div.stButton > button:hover {
-                background: transparent !important;
-                color: var(--accent-dark) !important;
-                transform: none !important;
-            }
-            div.st-key-expense_search_reset_button > button:disabled,
-            div.st-key-expense_search_reset_button div.stButton > button:disabled {
-                color: rgba(46, 38, 31, 0.28) !important;
-                opacity: 1 !important;
-                cursor: default !important;
-                pointer-events: none !important;
+                gap: 0.38rem;
             }
             .expense-edit-backdrop {
                 position: fixed;
@@ -1951,40 +1022,23 @@ def inject_styles() -> None:
             }
             div.st-key-expense_edit_mode_toggle > button,
             div.st-key-expense_edit_mode_toggle div.stButton > button {
-                min-width: 6.15rem !important;
+                min-width: 40px !important;
                 width: auto !important;
-                min-height: 24px !important;
-                height: 24px !important;
-                padding: 0 0.06rem !important;
-                border-radius: 0 !important;
+                min-height: 40px !important;
+                height: 40px !important;
+                padding: 0 0.9rem !important;
+                border-radius: 999px !important;
                 background: transparent !important;
-                color: rgba(46, 38, 31, 0.78) !important;
+                color: var(--text) !important;
                 border: none !important;
                 box-shadow: none !important;
-                font-size: 0.8rem !important;
+                font-size: 0.74rem !important;
                 font-weight: 500 !important;
                 line-height: 1 !important;
                 display: inline-flex !important;
                 align-items: center !important;
-                justify-content: flex-start !important;
+                justify-content: center !important;
                 white-space: nowrap !important;
-                text-transform: uppercase !important;
-                letter-spacing: 0.025em !important;
-                flex-shrink: 0 !important;
-                vertical-align: middle !important;
-            }
-            div.st-key-expense_edit_mode_toggle > button p,
-            div.st-key-expense_edit_mode_toggle div.stButton > button p,
-            div.st-key-expense_edit_mode_toggle > button span,
-            div.st-key-expense_edit_mode_toggle div.stButton > button span {
-                font-size: 0.8rem !important;
-                line-height: 1 !important;
-                font-weight: 500 !important;
-                letter-spacing: 0.025em !important;
-                text-transform: uppercase !important;
-                margin: 0 !important;
-                display: inline-flex !important;
-                align-items: center !important;
             }
             div.st-key-expense_edit_mode_toggle > button:hover,
             div.st-key-expense_edit_mode_toggle div.stButton > button:hover {
@@ -1992,128 +1046,18 @@ def inject_styles() -> None:
                 color: var(--accent-dark) !important;
                 transform: none !important;
             }
-            div.st-key-expense_edit_mode_toggle > button[kind="primary"],
-            div.st-key-expense_edit_mode_toggle div.stButton > button[kind="primary"] {
-                color: var(--accent-dark) !important;
-                text-decoration: underline;
-                text-decoration-thickness: 1px;
-                text-underline-offset: 0.16rem;
-            }
-            .income-tools-divider {
-                width: 100%;
-                height: 1px;
-                margin: 0.24rem 0 0 0;
-                background: linear-gradient(
-                    90deg,
-                    rgba(207, 138, 93, 0) 0%,
-                    rgba(207, 138, 93, 0.12) 18%,
-                    rgba(207, 138, 93, 0.18) 50%,
-                    rgba(207, 138, 93, 0.12) 82%,
-                    rgba(207, 138, 93, 0) 100%
-                );
-            }
-            div.st-key-income_tools_row {
-                margin: 0;
-            }
-            div.st-key-income_tools_row div[data-testid="stHorizontalBlock"] {
-                justify-content: flex-start;
-                align-items: center;
-                gap: 0.2rem;
-                flex-wrap: nowrap;
-            }
-            div.st-key-income_search_reset_button > button,
-            div.st-key-income_search_reset_button div.stButton > button {
-                min-width: 24px !important;
-                width: 24px !important;
-                min-height: 24px !important;
-                height: 24px !important;
-                padding: 0 !important;
-                border-radius: 0 !important;
-                background: transparent !important;
-                color: rgba(46, 38, 31, 0.86) !important;
-                border: none !important;
-                box-shadow: none !important;
-                font-size: 0.82rem !important;
-                font-weight: 500 !important;
-                line-height: 1 !important;
-                display: inline-flex !important;
-                align-items: center !important;
-                justify-content: center !important;
-                opacity: 1 !important;
-                flex-shrink: 0 !important;
-            }
-            div.st-key-income_search_reset_button > button:hover,
-            div.st-key-income_search_reset_button div.stButton > button:hover {
-                background: transparent !important;
-                color: var(--accent-dark) !important;
-                transform: none !important;
-            }
-            div.st-key-income_search_reset_button > button:disabled,
-            div.st-key-income_search_reset_button div.stButton > button:disabled {
-                color: rgba(46, 38, 31, 0.28) !important;
-                opacity: 1 !important;
-                cursor: default !important;
-                pointer-events: none !important;
-            }
-            div.st-key-income_edit_mode_toggle > button,
-            div.st-key-income_edit_mode_toggle div.stButton > button {
-                min-width: 6.75rem !important;
-                width: auto !important;
-                min-height: 24px !important;
-                height: 24px !important;
-                padding: 0 0.06rem !important;
-                border-radius: 0 !important;
-                background: transparent !important;
-                color: rgba(46, 38, 31, 0.78) !important;
-                border: none !important;
-                box-shadow: none !important;
-                font-size: 0.81rem !important;
-                font-weight: 500 !important;
-                line-height: 1 !important;
-                display: inline-flex !important;
-                align-items: center !important;
-                justify-content: flex-start !important;
-                white-space: nowrap !important;
-                text-transform: uppercase !important;
-                letter-spacing: 0.025em !important;
-                flex-shrink: 0 !important;
-            }
-            div.st-key-income_edit_mode_toggle > button p,
-            div.st-key-income_edit_mode_toggle div.stButton > button p,
-            div.st-key-income_edit_mode_toggle > button span,
-            div.st-key-income_edit_mode_toggle div.stButton > button span {
-                font-size: 0.81rem !important;
-                line-height: 1 !important;
-                font-weight: 500 !important;
-                letter-spacing: 0.025em !important;
-                text-transform: uppercase !important;
-                margin: 0 !important;
-            }
-            div.st-key-income_edit_mode_toggle > button:hover,
-            div.st-key-income_edit_mode_toggle div.stButton > button:hover {
-                background: transparent !important;
-                color: var(--accent-dark) !important;
-                transform: none !important;
-            }
-            div.st-key-income_edit_mode_toggle > button[kind="primary"],
-            div.st-key-income_edit_mode_toggle div.stButton > button[kind="primary"] {
-                color: var(--accent-dark) !important;
-                text-decoration: underline;
-                text-decoration-thickness: 1px;
-                text-underline-offset: 0.16rem;
-            }
             div.st-key-expense_sort_toggle button {
-                min-width: auto !important;
-                width: auto !important;
-                min-height: auto !important;
-                height: auto !important;
+                min-width: 40px !important;
+                width: 40px !important;
+                min-height: 40px !important;
+                height: 40px !important;
                 padding: 0 !important;
-                border-radius: 0 !important;
+                border-radius: 999px !important;
                 background: transparent !important;
                 color: var(--text) !important;
                 border: none !important;
                 box-shadow: none !important;
-                font-size: inherit !important;
+                font-size: 0.92rem !important;
                 line-height: 1 !important;
                 display: inline-flex !important;
                 align-items: center !important;
@@ -2125,583 +1069,78 @@ def inject_styles() -> None:
                 transform: none !important;
             }
             div.st-key-expense_sort_toggle > button,
-            div.st-key-expense_sort_toggle div.stButton > button,
-            div.st-key-income_sort_toggle > button,
-            div.st-key-income_sort_toggle div.stButton > button {
-                min-width: 24px !important;
-                width: 24px !important;
-                min-height: 24px !important;
-                height: 24px !important;
+            div.st-key-expense_sort_toggle div.stButton > button {
+                min-width: 40px !important;
+                width: 40px !important;
+                min-height: 40px !important;
+                height: 40px !important;
                 padding: 0 !important;
-                border-radius: 0 !important;
+                border-radius: 999px !important;
                 background: transparent !important;
                 color: var(--text) !important;
                 border: none !important;
                 box-shadow: none !important;
-                font-size: 0.8rem !important;
+                font-size: 0.92rem !important;
                 line-height: 1 !important;
                 display: inline-flex !important;
                 align-items: center !important;
                 justify-content: center !important;
-                flex-shrink: 0 !important;
-                vertical-align: middle !important;
             }
             div.st-key-expense_sort_toggle > button:hover,
-            div.st-key-expense_sort_toggle div.stButton > button:hover,
-            div.st-key-income_sort_toggle > button:hover,
-            div.st-key-income_sort_toggle div.stButton > button:hover {
+            div.st-key-expense_sort_toggle div.stButton > button:hover {
                 background: transparent !important;
                 color: var(--accent-dark) !important;
                 transform: none !important;
-            }
-            div.st-key-expense_delete_toggle > button,
-            div.st-key-expense_delete_toggle div.stButton > button {
-                min-width: 24px !important;
-                width: 24px !important;
-                min-height: 24px !important;
-                height: 24px !important;
-                padding: 0 !important;
-                border-radius: 0 !important;
-                background: transparent !important;
-                color: var(--text) !important;
-                border: none !important;
-                box-shadow: none !important;
-                font-size: 0.8rem !important;
-                line-height: 1 !important;
-                display: inline-flex !important;
-                align-items: center !important;
-                justify-content: center !important;
-                flex-shrink: 0 !important;
-                vertical-align: middle !important;
-            }
-            div.st-key-expense_delete_toggle > button:hover,
-            div.st-key-expense_delete_toggle div.stButton > button:hover {
-                background: transparent !important;
-                color: var(--accent-dark) !important;
-                transform: none !important;
-            }
-            div.st-key-expense_delete_toggle > button[kind="primary"],
-            div.st-key-expense_delete_toggle div.stButton > button[kind="primary"] {
-                color: var(--accent-dark) !important;
-            }
-            div.st-key-expense_sort_toggle button::after,
-            div.st-key-expense_sort_toggle div.stButton > button::after,
-            div.st-key-expense_search_toggle button::after,
-            div.st-key-expense_search_toggle div.stButton > button::after,
-            div.st-key-expense_delete_toggle button::after,
-            div.st-key-expense_delete_toggle div.stButton > button::after,
-            div.st-key-income_sort_toggle button::after,
-            div.st-key-income_sort_toggle div.stButton > button::after,
-            div.st-key-income_search_toggle button::after,
-            div.st-key-income_search_toggle div.stButton > button::after {
-                content: none !important;
-                display: none !important;
-            }
-            div.st-key-expense_sort_toggle button > span:last-child,
-            div.st-key-expense_sort_toggle div.stButton > button > span:last-child,
-            div.st-key-expense_search_toggle button > span:last-child,
-            div.st-key-expense_search_toggle div.stButton > button > span:last-child,
-            div.st-key-expense_search_reset_button > button > span:last-child,
-            div.st-key-expense_search_reset_button div.stButton > button > span:last-child,
-            div.st-key-expense_delete_toggle button > span:last-child,
-            div.st-key-expense_delete_toggle div.stButton > button > span:last-child,
-            div.st-key-income_sort_toggle button > span:last-child,
-            div.st-key-income_sort_toggle div.stButton > button > span:last-child,
-            div.st-key-income_search_toggle button > span:last-child,
-            div.st-key-income_search_toggle div.stButton > button > span:last-child {
-                display: none !important;
             }
             div.st-key-expense_search_toggle button,
             div.st-key-expense_search_toggle div.stButton > button,
-            div.st-key-expense_delete_toggle button,
-            div.st-key-expense_delete_toggle div.stButton > button,
             div.st-key-income_search_toggle button,
             div.st-key-income_search_toggle div.stButton > button {
-                min-width: 24px !important;
-                width: 24px !important;
-                min-height: 24px !important;
-                height: 24px !important;
+                min-width: 40px !important;
+                width: 40px !important;
+                min-height: 40px !important;
+                height: 40px !important;
                 padding: 0 !important;
-                border-radius: 0 !important;
+                border-radius: 999px !important;
                 background: transparent !important;
                 color: var(--text) !important;
                 border: none !important;
                 box-shadow: none !important;
-                font-size: 0.8rem !important;
+                font-size: 1.1rem !important;
                 line-height: 1 !important;
                 display: inline-flex !important;
                 align-items: center !important;
                 justify-content: center !important;
-                flex-shrink: 0 !important;
-                vertical-align: middle !important;
             }
             div.st-key-expense_search_toggle button p,
-            div.st-key-expense_delete_toggle button p,
             div.st-key-income_search_toggle button p {
-                font-size: 0.8rem !important;
+                font-size: 1.18rem !important;
                 line-height: 1 !important;
                 font-weight: 500 !important;
                 margin: 0 !important;
             }
             div.st-key-expense_search_toggle button:hover,
             div.st-key-expense_search_toggle div.stButton > button:hover,
-            div.st-key-expense_delete_toggle button:hover,
-            div.st-key-expense_delete_toggle div.stButton > button:hover,
             div.st-key-income_search_toggle button:hover,
             div.st-key-income_search_toggle div.stButton > button:hover {
                 background: transparent !important;
                 color: var(--accent-dark) !important;
                 transform: none !important;
             }
-            div.st-key-expense_delete_actions_row {
-                margin: 0.12rem 0 0.04rem 0;
-            }
-            div.st-key-expense_delete_actions_row div[data-testid="stHorizontalBlock"] {
-                align-items: center;
-                gap: 0.4rem;
-            }
-            .expense-delete-count {
-                color: var(--muted);
-                font-size: 0.74rem;
-                font-style: italic;
-                font-weight: 400;
-                line-height: 1;
-                white-space: nowrap;
-            }
-            div.st-key-expense_delete_toggle_all > button,
-            div.st-key-expense_delete_toggle_all div.stButton > button,
-            div.st-key-expense_delete_action > button,
-            div.st-key-expense_delete_action div.stButton > button,
-            div.st-key-expense_delete_confirm > button,
-            div.st-key-expense_delete_confirm div.stButton > button,
-            div.st-key-expense_delete_cancel > button,
-            div.st-key-expense_delete_cancel div.stButton > button {
-                min-height: 24px !important;
-                height: 24px !important;
-                padding: 0 !important;
-                border-radius: 0 !important;
-                border: none !important;
-                background: transparent !important;
-                box-shadow: none !important;
-                color: var(--muted) !important;
-                font-size: 0.76rem !important;
-                font-weight: 500 !important;
-                line-height: 1 !important;
-                text-decoration: none !important;
-            }
-            div.st-key-expense_delete_toggle_all > button p,
-            div.st-key-expense_delete_toggle_all div.stButton > button p,
-            div.st-key-expense_delete_toggle_all > button span,
-            div.st-key-expense_delete_toggle_all div.stButton > button span,
-            div.st-key-expense_delete_action > button p,
-            div.st-key-expense_delete_action div.stButton > button p,
-            div.st-key-expense_delete_action > button span,
-            div.st-key-expense_delete_action div.stButton > button span,
-            div.st-key-expense_delete_confirm > button p,
-            div.st-key-expense_delete_confirm div.stButton > button p,
-            div.st-key-expense_delete_confirm > button span,
-            div.st-key-expense_delete_confirm div.stButton > button span,
-            div.st-key-expense_delete_cancel > button p,
-            div.st-key-expense_delete_cancel div.stButton > button p,
-            div.st-key-expense_delete_cancel > button span,
-            div.st-key-expense_delete_cancel div.stButton > button span {
-                font-size: 0.76rem !important;
-                line-height: 1 !important;
-                font-weight: 500 !important;
-                margin: 0 !important;
-            }
-            div.st-key-expense_toolbar_shell {
-                margin: 0;
-            }
-            div.st-key-expense_toolbar_shell div[data-testid="stHorizontalBlock"] {
-                justify-content: flex-start;
-                align-items: center;
-                gap: 0.22rem;
-                flex-wrap: nowrap;
-            }
-            div.st-key-expense_toolbar_back_item,
-            div.st-key-expense_toolbar_edit_item,
-            div.st-key-expense_toolbar_sort_item,
-            div.st-key-expense_toolbar_search_item,
-            div.st-key-expense_toolbar_delete_item {
-                min-height: 24px;
-                display: flex;
-                align-items: center;
-            }
-            div.st-key-expense_toolbar_back_item button,
-            div.st-key-expense_toolbar_back_item div.stButton > button,
-            div.st-key-expense_toolbar_sort_item button,
-            div.st-key-expense_toolbar_sort_item div.stButton > button,
-            div.st-key-expense_toolbar_search_item button,
-            div.st-key-expense_toolbar_search_item div.stButton > button,
-            div.st-key-expense_toolbar_delete_item button,
-            div.st-key-expense_toolbar_delete_item div.stButton > button {
-                min-width: 24px !important;
-                width: 24px !important;
-                min-height: 24px !important;
-                height: 24px !important;
-                padding: 0 !important;
-                margin: 0 !important;
-                border: none !important;
-                border-radius: 0 !important;
-                background: transparent !important;
-                box-shadow: none !important;
-                color: rgba(46, 38, 31, 0.84) !important;
-                display: inline-flex !important;
-                align-items: center !important;
-                justify-content: center !important;
-                line-height: 1 !important;
-                vertical-align: middle !important;
-                flex-shrink: 0 !important;
-            }
-            div.st-key-expense_toolbar_back_item button:hover,
-            div.st-key-expense_toolbar_back_item div.stButton > button:hover,
-            div.st-key-expense_toolbar_sort_item button:hover,
-            div.st-key-expense_toolbar_sort_item div.stButton > button:hover,
-            div.st-key-expense_toolbar_search_item button:hover,
-            div.st-key-expense_toolbar_search_item div.stButton > button:hover,
-            div.st-key-expense_toolbar_delete_item button:hover,
-            div.st-key-expense_toolbar_delete_item div.stButton > button:hover {
-                background: transparent !important;
-                color: var(--accent-dark) !important;
-                transform: none !important;
-            }
-            div.st-key-expense_toolbar_back_item button:disabled,
-            div.st-key-expense_toolbar_back_item div.stButton > button:disabled {
-                color: rgba(46, 38, 31, 0.28) !important;
-                opacity: 1 !important;
-                cursor: default !important;
-                pointer-events: none !important;
-            }
-            div.st-key-expense_toolbar_delete_item button[kind="primary"],
-            div.st-key-expense_toolbar_delete_item div.stButton > button[kind="primary"] {
-                color: var(--accent-dark) !important;
-            }
-            div.st-key-expense_toolbar_back_item button::after,
-            div.st-key-expense_toolbar_back_item div.stButton > button::after,
-            div.st-key-expense_toolbar_sort_item button::after,
-            div.st-key-expense_toolbar_sort_item div.stButton > button::after,
-            div.st-key-expense_toolbar_search_item button::after,
-            div.st-key-expense_toolbar_search_item div.stButton > button::after,
-            div.st-key-expense_toolbar_delete_item button::after,
-            div.st-key-expense_toolbar_delete_item div.stButton > button::after {
-                content: none !important;
-                display: none !important;
-            }
-            div.st-key-expense_toolbar_back_item button > span:last-child,
-            div.st-key-expense_toolbar_back_item div.stButton > button > span:last-child,
-            div.st-key-expense_toolbar_sort_item button > span:last-child,
-            div.st-key-expense_toolbar_sort_item div.stButton > button > span:last-child,
-            div.st-key-expense_toolbar_search_item button > span:last-child,
-            div.st-key-expense_toolbar_search_item div.stButton > button > span:last-child,
-            div.st-key-expense_toolbar_delete_item button > span:last-child,
-            div.st-key-expense_toolbar_delete_item div.stButton > button > span:last-child {
-                display: none !important;
-            }
-            div.st-key-expense_toolbar_back_item button span[data-testid="stIconMaterial"],
-            div.st-key-expense_toolbar_back_item div.stButton > button span[data-testid="stIconMaterial"],
-            div.st-key-expense_toolbar_sort_item button span[data-testid="stIconMaterial"],
-            div.st-key-expense_toolbar_sort_item div.stButton > button span[data-testid="stIconMaterial"],
-            div.st-key-expense_toolbar_search_item button span[data-testid="stIconMaterial"],
-            div.st-key-expense_toolbar_search_item div.stButton > button span[data-testid="stIconMaterial"],
-            div.st-key-expense_toolbar_delete_item button span[data-testid="stIconMaterial"],
-            div.st-key-expense_toolbar_delete_item div.stButton > button span[data-testid="stIconMaterial"] {
-                width: 0.8rem !important;
-                min-width: 0.8rem !important;
-                height: 0.8rem !important;
-                font-size: 0.8rem !important;
-                display: inline-flex !important;
-                align-items: center !important;
-                justify-content: center !important;
-                line-height: 1 !important;
-                vertical-align: middle !important;
-            }
-            div.st-key-expense_toolbar_back_item button span[data-testid="stIconMaterial"] svg,
-            div.st-key-expense_toolbar_back_item div.stButton > button span[data-testid="stIconMaterial"] svg,
-            div.st-key-expense_toolbar_sort_item button span[data-testid="stIconMaterial"] svg,
-            div.st-key-expense_toolbar_sort_item div.stButton > button span[data-testid="stIconMaterial"] svg,
-            div.st-key-expense_toolbar_search_item button span[data-testid="stIconMaterial"] svg,
-            div.st-key-expense_toolbar_search_item div.stButton > button span[data-testid="stIconMaterial"] svg,
-            div.st-key-expense_toolbar_delete_item button span[data-testid="stIconMaterial"] svg,
-            div.st-key-expense_toolbar_delete_item div.stButton > button span[data-testid="stIconMaterial"] svg {
-                width: 0.8rem !important;
-                height: 0.8rem !important;
-                display: block !important;
-            }
-            div.st-key-expense_toolbar_edit_item button,
-            div.st-key-expense_toolbar_edit_item div.stButton > button {
-                min-height: 24px !important;
-                height: 24px !important;
-                width: auto !important;
-                min-width: 6.15rem !important;
-                padding: 0 0.06rem !important;
-                margin: 0 !important;
-                border: none !important;
-                border-radius: 0 !important;
-                background: transparent !important;
-                box-shadow: none !important;
-                color: rgba(46, 38, 31, 0.78) !important;
-                display: inline-flex !important;
-                align-items: center !important;
-                justify-content: flex-start !important;
-                line-height: 1 !important;
-                vertical-align: middle !important;
-                white-space: nowrap !important;
-                font-size: 0.8rem !important;
-                font-weight: 500 !important;
-                text-transform: uppercase !important;
-                letter-spacing: 0.025em !important;
-            }
-            div.st-key-expense_toolbar_edit_item button p,
-            div.st-key-expense_toolbar_edit_item div.stButton > button p,
-            div.st-key-expense_toolbar_edit_item button span,
-            div.st-key-expense_toolbar_edit_item div.stButton > button span {
-                margin: 0 !important;
-                font-size: 0.8rem !important;
-                font-weight: 500 !important;
-                line-height: 1 !important;
-                text-transform: uppercase !important;
-                letter-spacing: 0.025em !important;
-                display: inline-flex !important;
-                align-items: center !important;
-            }
-            div.st-key-expense_toolbar_edit_item button:hover,
-            div.st-key-expense_toolbar_edit_item div.stButton > button:hover {
-                background: transparent !important;
-                color: var(--accent-dark) !important;
-                transform: none !important;
-            }
-            div.st-key-expense_toolbar_edit_item button[kind="primary"],
-            div.st-key-expense_toolbar_edit_item div.stButton > button[kind="primary"] {
-                color: var(--accent-dark) !important;
-                text-decoration: underline;
-                text-decoration-thickness: 1px;
-                text-underline-offset: 0.16rem;
-            }
-            div.st-key-income_toolbar_shell {
-                margin: 0;
-            }
-            div.st-key-income_toolbar_shell div[data-testid="stHorizontalBlock"] {
-                justify-content: flex-start;
-                align-items: center;
-                gap: 0.22rem;
-                flex-wrap: nowrap;
-            }
-            div.st-key-income_toolbar_back_item,
-            div.st-key-income_toolbar_edit_item,
-            div.st-key-income_toolbar_sort_item,
-            div.st-key-income_toolbar_search_item {
-                min-height: 24px;
-                display: flex;
-                align-items: center;
-            }
-            div.st-key-income_toolbar_back_item button,
-            div.st-key-income_toolbar_back_item div.stButton > button,
-            div.st-key-income_toolbar_sort_item button,
-            div.st-key-income_toolbar_sort_item div.stButton > button,
-            div.st-key-income_toolbar_search_item button,
-            div.st-key-income_toolbar_search_item div.stButton > button {
-                min-width: 24px !important;
-                width: 24px !important;
-                min-height: 24px !important;
-                height: 24px !important;
-                padding: 0 !important;
-                margin: 0 !important;
-                border: none !important;
-                border-radius: 0 !important;
-                background: transparent !important;
-                box-shadow: none !important;
-                color: rgba(46, 38, 31, 0.84) !important;
-                display: inline-flex !important;
-                align-items: center !important;
-                justify-content: center !important;
-                line-height: 1 !important;
-                vertical-align: middle !important;
-                flex-shrink: 0 !important;
-            }
-            div.st-key-income_toolbar_back_item button:hover,
-            div.st-key-income_toolbar_back_item div.stButton > button:hover,
-            div.st-key-income_toolbar_sort_item button:hover,
-            div.st-key-income_toolbar_sort_item div.stButton > button:hover,
-            div.st-key-income_toolbar_search_item button:hover,
-            div.st-key-income_toolbar_search_item div.stButton > button:hover {
-                background: transparent !important;
-                color: var(--accent-dark) !important;
-                transform: none !important;
-            }
-            div.st-key-income_toolbar_back_item button:disabled,
-            div.st-key-income_toolbar_back_item div.stButton > button:disabled {
-                color: rgba(46, 38, 31, 0.28) !important;
-                opacity: 1 !important;
-                cursor: default !important;
-                pointer-events: none !important;
-            }
-            div.st-key-income_toolbar_back_item button::after,
-            div.st-key-income_toolbar_back_item div.stButton > button::after,
-            div.st-key-income_toolbar_sort_item button::after,
-            div.st-key-income_toolbar_sort_item div.stButton > button::after,
-            div.st-key-income_toolbar_search_item button::after,
-            div.st-key-income_toolbar_search_item div.stButton > button::after {
-                content: none !important;
-                display: none !important;
-            }
-            div.st-key-income_toolbar_back_item button > span:last-child,
-            div.st-key-income_toolbar_back_item div.stButton > button > span:last-child,
-            div.st-key-income_toolbar_sort_item button > span:last-child,
-            div.st-key-income_toolbar_sort_item div.stButton > button > span:last-child,
-            div.st-key-income_toolbar_search_item button > span:last-child,
-            div.st-key-income_toolbar_search_item div.stButton > button > span:last-child {
-                display: none !important;
-            }
-            div.st-key-income_toolbar_back_item button span[data-testid="stIconMaterial"],
-            div.st-key-income_toolbar_back_item div.stButton > button span[data-testid="stIconMaterial"],
-            div.st-key-income_toolbar_sort_item button span[data-testid="stIconMaterial"],
-            div.st-key-income_toolbar_sort_item div.stButton > button span[data-testid="stIconMaterial"],
-            div.st-key-income_toolbar_search_item button span[data-testid="stIconMaterial"],
-            div.st-key-income_toolbar_search_item div.stButton > button span[data-testid="stIconMaterial"] {
-                width: 0.8rem !important;
-                min-width: 0.8rem !important;
-                height: 0.8rem !important;
-                font-size: 0.8rem !important;
-                display: inline-flex !important;
-                align-items: center !important;
-                justify-content: center !important;
-                line-height: 1 !important;
-                vertical-align: middle !important;
-            }
-            div.st-key-income_toolbar_back_item button span[data-testid="stIconMaterial"] svg,
-            div.st-key-income_toolbar_back_item div.stButton > button span[data-testid="stIconMaterial"] svg,
-            div.st-key-income_toolbar_sort_item button span[data-testid="stIconMaterial"] svg,
-            div.st-key-income_toolbar_sort_item div.stButton > button span[data-testid="stIconMaterial"] svg,
-            div.st-key-income_toolbar_search_item button span[data-testid="stIconMaterial"] svg,
-            div.st-key-income_toolbar_search_item div.stButton > button span[data-testid="stIconMaterial"] svg {
-                width: 0.8rem !important;
-                height: 0.8rem !important;
-                display: block !important;
-            }
-            div.st-key-income_toolbar_edit_item button,
-            div.st-key-income_toolbar_edit_item div.stButton > button {
-                min-height: 24px !important;
-                height: 24px !important;
-                width: auto !important;
-                min-width: 6.75rem !important;
-                padding: 0 0.06rem !important;
-                margin: 0 !important;
-                border: none !important;
-                border-radius: 0 !important;
-                background: transparent !important;
-                box-shadow: none !important;
-                color: rgba(46, 38, 31, 0.78) !important;
-                display: inline-flex !important;
-                align-items: center !important;
-                justify-content: flex-start !important;
-                line-height: 1 !important;
-                vertical-align: middle !important;
-                white-space: nowrap !important;
-                font-size: 0.8rem !important;
-                font-weight: 500 !important;
-                text-transform: uppercase !important;
-                letter-spacing: 0.025em !important;
-            }
-            div.st-key-income_toolbar_edit_item button p,
-            div.st-key-income_toolbar_edit_item div.stButton > button p,
-            div.st-key-income_toolbar_edit_item button span,
-            div.st-key-income_toolbar_edit_item div.stButton > button span {
-                margin: 0 !important;
-                font-size: 0.8rem !important;
-                font-weight: 500 !important;
-                line-height: 1 !important;
-                text-transform: uppercase !important;
-                letter-spacing: 0.025em !important;
-                display: inline-flex !important;
-                align-items: center !important;
-            }
-            div.st-key-income_toolbar_edit_item button:hover,
-            div.st-key-income_toolbar_edit_item div.stButton > button:hover {
-                background: transparent !important;
-                color: var(--accent-dark) !important;
-                transform: none !important;
-            }
-            div.st-key-income_toolbar_edit_item button[kind="primary"],
-            div.st-key-income_toolbar_edit_item div.stButton > button[kind="primary"] {
-                color: var(--accent-dark) !important;
-                text-decoration: underline;
-                text-decoration-thickness: 1px;
-                text-underline-offset: 0.16rem;
-            }
-            div.st-key-expense_delete_toggle_all > button:hover,
-            div.st-key-expense_delete_toggle_all div.stButton > button:hover,
-            div.st-key-expense_delete_action > button:hover,
-            div.st-key-expense_delete_action div.stButton > button:hover,
-            div.st-key-expense_delete_confirm > button:hover,
-            div.st-key-expense_delete_confirm div.stButton > button:hover,
-            div.st-key-expense_delete_cancel > button:hover,
-            div.st-key-expense_delete_cancel div.stButton > button:hover {
-                color: var(--accent-dark) !important;
-                background: transparent !important;
-                transform: none !important;
-            }
-            div.st-key-expense_delete_confirm > button,
-            div.st-key-expense_delete_confirm div.stButton > button,
-            div.st-key-expense_delete_action > button:not(:disabled),
-            div.st-key-expense_delete_action div.stButton > button:not(:disabled) {
-                color: var(--accent-dark) !important;
-            }
-            div.st-key-expense_delete_action > button:disabled,
-            div.st-key-expense_delete_action div.stButton > button:disabled {
-                color: rgba(46, 38, 31, 0.3) !important;
-                opacity: 1 !important;
-                pointer-events: none !important;
-            }
-            div[class*="st-key-expense_delete_row_toggle_"] div[data-testid="stCheckbox"],
-            div[class*="st-key-expense_delete_row_toggle_"] label {
-                display: flex !important;
-                align-items: center !important;
-                justify-content: center !important;
-                min-height: 52px !important;
-                height: 52px !important;
-                padding: 0 !important;
-                margin: 0 !important;
-            }
-            div[class*="st-key-expense_delete_row_toggle_"] p {
-                display: none !important;
-            }
-            div[class*="st-key-expense_delete_row_toggle_"] input {
-                accent-color: var(--accent) !important;
-            }
             div.st-key-expense_sort_menu,
             div.st-key-expense_search_menu,
             div.st-key-income_sort_menu,
             div.st-key-income_search_menu {
                 margin-top: 0.18rem;
-                padding: 0 !important;
-                background: transparent !important;
-                border: none !important;
-                border-radius: 0 !important;
-                box-shadow: none !important;
+                padding: 0.6rem 0.72rem;
+                background: rgba(255, 251, 246, 0.98);
+                border: 1px solid var(--border);
+                border-radius: 16px;
+                box-shadow: 0 14px 28px rgba(70, 43, 22, 0.08);
             }
             div.st-key-expense_search_menu input,
             div.st-key-income_search_menu input {
-                font-size: 0.76rem !important;
-                background: transparent !important;
-                border: none !important;
-                box-shadow: none !important;
-                padding: 0 !important;
-                line-height: 1 !important;
-            }
-            div.st-key-expense_search_menu div[data-baseweb="input"],
-            div.st-key-expense_search_menu div[data-baseweb="input"] > div,
-            div.st-key-expense_search_menu div[data-baseweb="base-input"],
-            div.st-key-income_search_menu div[data-baseweb="input"],
-            div.st-key-income_search_menu div[data-baseweb="input"] > div,
-            div.st-key-income_search_menu div[data-baseweb="base-input"] {
-                background: transparent !important;
-                border: none !important;
-                box-shadow: none !important;
-                border-radius: 0 !important;
-                padding: 0 !important;
-                min-height: auto !important;
-                line-height: 1 !important;
+                font-size: 0.86rem !important;
             }
             div.st-key-expense_sort_menu div[data-testid="stRadio"] > div {
                 background: transparent !important;
@@ -3226,7 +1665,7 @@ def main() -> None:
     all_incomes = get_incomes()
     all_incomes = get_visible_incomes(all_incomes, current_username)
 
-    render_topbar(all_expenses)
+    render_topbar()
     if st.session_state.get("current_view") == "new_expense":
         st.session_state.current_view = "home"
         st.session_state.show_new_expense_modal = True
@@ -3236,7 +1675,7 @@ def main() -> None:
     if st.session_state.get("current_view") == "edit_expense":
         st.session_state.current_view = "home"
         st.session_state.show_edit_expense_modal = True
-    filtered_expenses, selected_month = apply_expense_filter_state(all_expenses)
+    filtered_expenses, selected_month = render_sidebar_filters(all_expenses)
     filtered_incomes = apply_income_filters(all_incomes, selected_month)
     current_section = st.session_state.get("current_section", "Home")
     if st.session_state.get("current_view") == "dashboard_detail":
@@ -3252,10 +1691,6 @@ def main() -> None:
         render_operation_detail_page(filtered_expenses, filtered_incomes)
         return
 
-    if st.session_state.get("pending_section_navigation_sync", False):
-        st.session_state.section_navigation_value = st.session_state.get("current_section", "Home")
-        st.session_state.pending_section_navigation_sync = False
-
     with st.container(key="section_navigation_shell"):
         current_section = render_section_navigation()
     if st.session_state.get("show_new_expense_modal", False):
@@ -3267,8 +1702,8 @@ def main() -> None:
     if st.session_state.get("show_edit_expense_modal", False):
         render_edit_expense_dialog(filtered_expenses)
     if current_section == "Home":
-        render_home_welcome()
-        render_hero(all_expenses, all_incomes, selected_month)
+        render_home_counter(all_expenses, all_incomes, selected_month)
+        render_hero(all_expenses)
         render_month_navigation_bar(selected_month, "home_month")
         render_dashboard(all_expenses, all_incomes, selected_month)
     render_main_content(current_section, filtered_expenses, filtered_incomes, all_expenses, all_incomes, selected_month)
@@ -3291,48 +1726,14 @@ def initialize_session_state() -> None:
         st.session_state.show_expense_sort_menu = False
     if "show_expense_search_menu" not in st.session_state:
         st.session_state.show_expense_search_menu = False
-    if "expense_search_confirmed" not in st.session_state:
-        st.session_state.expense_search_confirmed = False
-    if "expense_delete_mode" not in st.session_state:
-        st.session_state.expense_delete_mode = False
-    if "expense_delete_selected_ids" not in st.session_state:
-        st.session_state.expense_delete_selected_ids = []
-    if "expense_delete_confirm_pending" not in st.session_state:
-        st.session_state.expense_delete_confirm_pending = False
     if "show_income_sort_menu" not in st.session_state:
         st.session_state.show_income_sort_menu = False
     if "show_income_search_menu" not in st.session_state:
         st.session_state.show_income_search_menu = False
-    if "income_search_confirmed" not in st.session_state:
-        st.session_state.income_search_confirmed = False
-    if "income_info_focus" not in st.session_state:
-        st.session_state.income_info_focus = "source"
     if "is_authenticated" not in st.session_state:
         st.session_state.is_authenticated = False
     if "current_user" not in st.session_state:
         st.session_state.current_user = None
-    if "current_section" not in st.session_state:
-        st.session_state.current_section = "Home"
-    if "section_navigation_value" not in st.session_state:
-        st.session_state.section_navigation_value = st.session_state.current_section
-    if "show_filters" not in st.session_state:
-        st.session_state.show_filters = True
-    if "pending_section_navigation_sync" not in st.session_state:
-        st.session_state.pending_section_navigation_sync = False
-    if "pending_sidebar_filter_overrides" not in st.session_state:
-        st.session_state.pending_sidebar_filter_overrides = {}
-    if "current_view" not in st.session_state:
-        st.session_state.current_view = "home"
-    if "page" not in st.session_state:
-        st.session_state.page = "home"
-    if "expense_filter" not in st.session_state:
-        st.session_state.expense_filter = None
-    if "expense_type_filter" not in st.session_state:
-        st.session_state.expense_type_filter = "Tutte"
-    if "expense_category_filter" not in st.session_state:
-        st.session_state.expense_category_filter = "Tutte"
-    if "couple_balance_status_filter" not in st.session_state:
-        st.session_state.couple_balance_status_filter = "Da regolare"
 
 
 def render_login_page() -> None:
@@ -3375,450 +1776,59 @@ def render_login_page() -> None:
         close_section()
 
 
-def render_topbar(dataframe: pd.DataFrame) -> None:
+def render_topbar() -> None:
     user = st.session_state.current_user or {}
-    filter_state = resolve_expense_filter_state(dataframe)
     st.markdown('<div class="topbar-row">', unsafe_allow_html=True)
-    left, actions_col = st.columns([1, 0.24], vertical_alignment="center")
+    left, right = st.columns([1, 0.08])
     with left:
         st.markdown(
             f'<div class="topbar-text">Connesso come: {user.get("full_name", "Utente")} ({user.get("username", "-")})</div>',
             unsafe_allow_html=True,
         )
-    with actions_col:
-        with st.container(key="topbar_actions"):
-            profile_col, home_col, filter_col, menu_col, logout_col = st.columns(5, gap="medium", vertical_alignment="center")
-            with profile_col:
-                with st.container(key="topbar_profile_icon"):
-                    if st.button("", key="topbar_profile_button", icon=":material/person:", use_container_width=False, type="secondary"):
-                        st.session_state.current_view = "profile"
-                        st.rerun()
-            with home_col:
-                with st.container(key="topbar_home_icon"):
-                    if st.button("", key="topbar_home_button", icon=":material/home:", use_container_width=False, type="secondary"):
-                        st.session_state.current_view = "home"
-                        st.session_state.current_section = "Home"
-                        st.session_state.pending_section_navigation_sync = True
-                        clear_page_navigation_intent()
-                        st.rerun()
-            with filter_col:
-                with st.container(key="topbar_filter_icon"):
-                    with st.popover("", use_container_width=False, icon=":material/tune:"):
-                        st.caption("Filtri")
-                        year_options = filter_state["year_options"]
-                        selected_year = filter_state["selected_year"]
-                        selected_month = filter_state["selected_month"]
-                        available_months = filter_state["available_months"]
-                        if year_options:
-                            selected_year = st.selectbox(
-                                "Anno",
-                                year_options,
-                                index=year_options.index(selected_year) if selected_year in year_options else 0,
-                                key="topbar_filter_year",
-                            )
-                        month_map = {
-                            MONTH_NAMES.get(month.split("-")[1], month): month
-                            for month in available_months
-                            if month.startswith(selected_year)
-                        }
-                        month_labels = list(month_map.keys())
-                        default_month_label = None
-                        if selected_month != "Tutti" and selected_month.startswith(selected_year):
-                            default_month_label = MONTH_NAMES.get(selected_month.split("-")[1], selected_month)
-                        default_index = month_labels.index(default_month_label) if default_month_label in month_labels else 0
-                        selected_month_label = st.selectbox(
-                            "Mese",
-                            month_labels,
-                            index=default_index if month_labels else 0,
-                            key="topbar_filter_month_label",
-                        ) if month_labels else None
-                        selected_category = st.selectbox(
-                            "Categoria",
-                            filter_state["category_options"],
-                            index=filter_state["category_options"].index(filter_state["selected_category"]) if filter_state["selected_category"] in filter_state["category_options"] else 0,
-                            key="topbar_filter_category",
-                        )
-                        selected_payer = st.selectbox(
-                            "Persona",
-                            filter_state["payer_options"],
-                            index=filter_state["payer_options"].index(filter_state["selected_payer"]) if filter_state["selected_payer"] in filter_state["payer_options"] else 0,
-                            key="topbar_filter_payer",
-                        )
-                        selected_type = st.selectbox(
-                            "Tipo spesa",
-                            filter_state["type_options"],
-                            index=filter_state["type_options"].index(filter_state["selected_type"]) if filter_state["selected_type"] in filter_state["type_options"] else 0,
-                            key="topbar_filter_type",
-                        )
-                        month_value = month_map.get(selected_month_label, "Tutti") if selected_month_label else "Tutti"
-                        st.session_state.filters = {
-                            "month_label": month_value,
-                            "year_label": selected_year,
-                            "category": selected_category,
-                            "payer": selected_payer,
-                            "expense_type": selected_type,
-                        }
-            with menu_col:
-                with st.container(key="topbar_menu_icon"):
-                    with st.popover("", use_container_width=False, icon=":material/more_horiz:"):
-                        if st.button("Ricarica pagina", key="topbar_refresh_page", use_container_width=True, type="tertiary"):
-                            st.rerun()
-                        if st.button("Reset filtri", key="topbar_reset_filters", use_container_width=True, type="tertiary"):
-                            st.session_state.filters = {
-                                "month_label": "Tutti",
-                                "year_label": date.today().strftime("%Y"),
-                                "category": "Tutte",
-                                "payer": "Tutti",
-                                "expense_type": "Tutte",
-                            }
-                            st.rerun()
-            with logout_col:
-                with st.container(key="topbar_logout_icon"):
-                    if st.button("", key="logout_small", icon=":material/logout:", use_container_width=False, type="secondary"):
-                        st.session_state.is_authenticated = False
-                        st.session_state.current_user = None
-                        st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def resolve_expense_filter_state(dataframe: pd.DataFrame) -> dict:
-    month_options = get_month_options(dataframe)
-    category_options = ["Tutte"] + get_categories()
-    payer_values = sorted(dataframe["paid_by"].dropna().unique().tolist()) if not dataframe.empty else []
-    payer_options = ["Tutti"] + payer_values
-    type_options = ["Tutte"] + EXPENSE_TYPE_OPTIONS
-    available_months = [month for month in month_options if month != "Tutti"]
-    year_options = sorted({month.split("-")[0] for month in available_months}, reverse=True)
-    previous_filters = st.session_state.get(
-        "filters",
-        {"month_label": "Tutti", "category": "Tutte", "payer": "Tutti", "expense_type": "Tutte"},
-    )
-    pending_overrides = dict(st.session_state.get("pending_sidebar_filter_overrides", {}))
-    if pending_overrides:
-        previous_filters = {**previous_filters, **pending_overrides}
-        st.session_state.pending_sidebar_filter_overrides = {}
-
-    selected_month = previous_filters.get("month_label", "Tutti")
-    selected_category = previous_filters.get("category", "Tutte")
-    selected_payer = previous_filters.get("payer", "Tutti")
-    selected_type = previous_filters.get("expense_type", "Tutte")
-    selected_year = selected_month.split("-")[0] if selected_month != "Tutti" else (year_options[0] if year_options else date.today().strftime("%Y"))
-    if year_options and selected_year not in year_options:
-        selected_year = year_options[0]
-
-    return {
-        "category_options": category_options,
-        "payer_options": payer_options,
-        "type_options": type_options,
-        "available_months": available_months,
-        "year_options": year_options,
-        "selected_month": selected_month,
-        "selected_category": selected_category,
-        "selected_payer": selected_payer,
-        "selected_type": selected_type,
-        "selected_year": selected_year,
-    }
-
-
-def apply_expense_filter_state(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, str]:
-    filter_state = resolve_expense_filter_state(dataframe)
-    selected_month = filter_state["selected_month"]
-    selected_category = filter_state["selected_category"]
-    selected_payer = filter_state["selected_payer"]
-    selected_type = filter_state["selected_type"]
-    year_options = filter_state["year_options"]
-
-    filtered = apply_filters(
-        dataframe=dataframe,
-        month_label=selected_month,
-        category=selected_category,
-        payer=selected_payer,
-        expense_type=selected_type,
-    )
-    st.session_state.filters = {
-        "month_label": selected_month,
-        "year_label": selected_month.split("-")[0] if selected_month != "Tutti" else (year_options[0] if year_options else date.today().strftime("%Y")),
-        "category": selected_category,
-        "payer": selected_payer,
-        "expense_type": selected_type,
-    }
-    return filtered, selected_month
-
-
-def render_home_toolbar(dataframe: pd.DataFrame) -> None:
-    filter_state = resolve_expense_filter_state(dataframe)
-    st.markdown('<div class="home-toolbar-shell">', unsafe_allow_html=True)
-    with st.container(key="home_toolbar_actions"):
-        profile_col, home_col, filter_col = st.columns([0.06, 0.06, 0.06], gap="small", vertical_alignment="center")
-        with profile_col:
-            if st.button("", key="home_profile_icon", icon=":material/person:", use_container_width=False, type="secondary"):
-                st.session_state.current_view = "profile"
-                st.rerun()
-        with home_col:
-            if st.button("", key="home_go_home_icon", icon=":material/home:", use_container_width=False, type="secondary"):
-                st.session_state.current_view = "home"
-                st.session_state.current_section = "Home"
-                st.session_state.pending_section_navigation_sync = True
-                clear_page_navigation_intent()
-                st.rerun()
-        with filter_col:
-            with st.container(key="home_filter_popover"):
-                with st.popover("", use_container_width=False, icon=":material/tune:"):
-                    year_options = filter_state["year_options"]
-                    selected_year = filter_state["selected_year"]
-                    selected_month = filter_state["selected_month"]
-                    available_months = filter_state["available_months"]
-                    if year_options:
-                        selected_year = st.selectbox(
-                            "Anno",
-                            year_options,
-                            index=year_options.index(selected_year) if selected_year in year_options else 0,
-                            key="home_filter_year",
-                        )
-                    month_map = {
-                        MONTH_NAMES.get(month.split("-")[1], month): month
-                        for month in available_months
-                        if month.startswith(selected_year)
-                    }
-                    month_labels = list(month_map.keys())
-                    default_month_label = None
-                    if selected_month != "Tutti" and selected_month.startswith(selected_year):
-                        default_month_label = MONTH_NAMES.get(selected_month.split("-")[1], selected_month)
-                    default_index = month_labels.index(default_month_label) if default_month_label in month_labels else 0
-                    selected_month_label = st.selectbox(
-                        "Mese",
-                        month_labels,
-                        index=default_index if month_labels else 0,
-                        key="home_filter_month_label",
-                    ) if month_labels else None
-                    selected_category = st.selectbox(
-                        "Categoria",
-                        filter_state["category_options"],
-                        index=filter_state["category_options"].index(filter_state["selected_category"]) if filter_state["selected_category"] in filter_state["category_options"] else 0,
-                        key="home_filter_category",
-                    )
-                    selected_payer = st.selectbox(
-                        "Persona",
-                        filter_state["payer_options"],
-                        index=filter_state["payer_options"].index(filter_state["selected_payer"]) if filter_state["selected_payer"] in filter_state["payer_options"] else 0,
-                        key="home_filter_payer",
-                    )
-                    selected_type = st.selectbox(
-                        "Tipo spesa",
-                        filter_state["type_options"],
-                        index=filter_state["type_options"].index(filter_state["selected_type"]) if filter_state["selected_type"] in filter_state["type_options"] else 0,
-                        key="home_filter_type",
-                    )
-                    month_value = month_map.get(selected_month_label, "Tutti") if selected_month_label else "Tutti"
-                    st.session_state.filters = {
-                        "month_label": month_value,
-                        "year_label": selected_year,
-                        "category": selected_category,
-                        "payer": selected_payer,
-                        "expense_type": selected_type,
-                    }
-                    filtered_preview = apply_filters(
-                        dataframe=dataframe,
-                        month_label=month_value,
-                        category=selected_category,
-                        payer=selected_payer,
-                        expense_type=selected_type,
-                    )
-                    st.markdown(
-                        f"<div class='home-filter-count'>Spese mostrate: <strong>{len(filtered_preview)}</strong></div>",
-                        unsafe_allow_html=True,
-                    )
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def render_home_scope_toggle() -> str:
-    current_scope = st.session_state.get("home_counter_scope", "Mensile")
-    with st.container(key="home_finance_scope"):
-        monthly_col, yearly_col = st.columns(2, gap="small")
-        with monthly_col:
-            if st.button(
-                "Mensile",
-                key="home_scope_monthly",
-                use_container_width=True,
-                type="primary" if current_scope == "Mensile" else "secondary",
-            ):
-                st.session_state.home_counter_scope = "Mensile"
-                st.rerun()
-        with yearly_col:
-            if st.button(
-                "Annuale",
-                key="home_scope_yearly",
-                use_container_width=True,
-                type="primary" if current_scope == "Annuale" else "secondary",
-            ):
-                st.session_state.home_counter_scope = "Annuale"
-                st.rerun()
-    return st.session_state.get("home_counter_scope", current_scope)
-
-
-def build_home_financial_summary(
-    all_expenses: pd.DataFrame,
-    all_incomes: pd.DataFrame,
-    selected_month: str,
-) -> dict:
-    filters = st.session_state.get("filters", {})
-    selected_year = filters.get("year_label")
-    active_month_label = resolve_month_label(selected_month)
-    active_year = selected_year or active_month_label.split("-")[0]
-    scope = st.session_state.get("home_counter_scope", "Mensile")
-
-    if scope == "Annuale":
-        scoped_expenses = all_expenses[all_expenses["month_label"].str.startswith(active_year)] if not all_expenses.empty else all_expenses
-        scoped_incomes = all_incomes[all_incomes["month_label"].str.startswith(active_year)] if not all_incomes.empty else all_incomes
-        period_label = active_year
-        context_note = "Visione complessiva del periodo in corso."
-    else:
-        scoped_expenses = all_expenses[all_expenses["month_label"] == active_month_label] if not all_expenses.empty else all_expenses
-        scoped_incomes = all_incomes[all_incomes["month_label"] == active_month_label] if not all_incomes.empty else all_incomes
-        period_label = format_month_heading(active_month_label)
-        context_note = "Panoramica del mese attivo con focus immediato sul saldo."
-
-    total_expenses = float(scoped_expenses["amount"].sum()) if not scoped_expenses.empty else 0.0
-    total_incomes = float(scoped_incomes["amount"].sum()) if not scoped_incomes.empty else 0.0
-    savings = total_incomes - total_expenses
-    expense_count = len(scoped_expenses) if not scoped_expenses.empty else 0
-    income_count = len(scoped_incomes) if not scoped_incomes.empty else 0
-    current_username = str((st.session_state.current_user or {}).get("username", "") or "")
-    couple_balance = compute_couple_balance(current_username, scoped_expenses) if current_username else 0.0
-
-    if savings > 0:
-        balance_note = "Margine positivo rispetto alle uscite."
-        balance_accent = "home-finance-card-accent-balance-positive"
-    elif savings < 0:
-        balance_note = "Le uscite stanno superando le entrate."
-        balance_accent = "home-finance-card-accent-balance-negative"
-    else:
-        balance_note = "Entrate e uscite sono perfettamente allineate."
-        balance_accent = "home-finance-card-accent-balance-neutral"
-
-    if couple_balance > 0:
-        couple_balance_note = f"Mi devono {format_currency(couple_balance)}"
-        couple_balance_accent = "home-finance-card-accent-couple-positive"
-    elif couple_balance < 0:
-        couple_balance_note = f"Devo {format_currency(abs(couple_balance))}"
-        couple_balance_accent = "home-finance-card-accent-couple-negative"
-    else:
-        couple_balance_note = "Siamo in pari"
-        couple_balance_accent = "home-finance-card-accent-couple-neutral"
-
-    return {
-        "scope": scope,
-        "period_label": period_label,
-        "context_note": context_note,
-        "total_expenses": total_expenses,
-        "total_incomes": total_incomes,
-        "savings": savings,
-        "expense_count": expense_count,
-        "income_count": income_count,
-        "balance_note": balance_note,
-        "balance_accent": balance_accent,
-        "couple_balance": couple_balance,
-        "couple_balance_note": couple_balance_note,
-        "couple_balance_accent": couple_balance_accent,
-    }
-
-
-def render_home_financial_summary_panel(summary: dict) -> None:
-    render_home_scope_toggle()
-    st.markdown(
-        f"""
-        <div class="home-finance-panel">
-            <div class="home-finance-head">
-                <div>
-                    <div class="home-finance-eyebrow">Quadro finanziario</div>
-                    <div class="home-finance-period">{escape(str(summary["period_label"]))}</div>
-                </div>
-            </div>
-            <div class="home-finance-kpi-grid">
-                <div class="home-finance-card">
-                    <div class="home-finance-card-label">Spese</div>
-                    <div class="home-finance-card-value home-finance-card-accent-expense">{format_currency(float(summary["total_expenses"]))}</div>
-                    <div class="home-finance-card-note">{int(summary["expense_count"])} movimenti in uscita</div>
-                </div>
-                <div class="home-finance-card">
-                    <div class="home-finance-card-label">Risparmi</div>
-                    <div class="home-finance-card-value {escape(str(summary["balance_accent"]))}">{format_currency(float(summary["savings"]))}</div>
-                    <div class="home-finance-card-note">{escape(str(summary["balance_note"]))}</div>
-                </div>
-                <div class="home-finance-card home-finance-card-couple">
-                    <div class="home-finance-card-label">Saldo di coppia</div>
-                    <div class="home-finance-card-value {escape(str(summary["couple_balance_accent"]))}">{format_currency(abs(float(summary["couple_balance"])))}</div>
-                    <div class="home-finance-card-note">{escape(str(summary["couple_balance_note"]))}</div>
-                </div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_home_summary_panel(summary: dict) -> None:
-    st.markdown(
-        f"""
-        <div class="home-summary-mini">
-            <div class="home-summary-mini-eyebrow">Resoconto mensile</div>
-            <div class="home-summary-mini-copy">
-                Analizza e scarica PDF o CSV dei tuoi movimenti mensili.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    with st.container(key="home_summary_cta"):
-        if st.button("Apri riepilogo", key="home_summary_cta_button", use_container_width=True, type="secondary"):
-            st.session_state.current_view = "summary"
+    with right:
+        if st.button("Logout", key="logout_small", use_container_width=False, type="tertiary"):
+            st.session_state.is_authenticated = False
+            st.session_state.current_user = None
             st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
-def render_home_welcome() -> None:
-    current_user = st.session_state.current_user or {}
-    username = str(current_user.get("username") or "Utente")
-    st.markdown(
-        f"""
-        <div class="home-welcome-shell">
-            <div class="home-welcome-title">Ciao {escape(username)}</div>
-            <div class="home-welcome-copy">Ogni movimento che registri ti avvicina a un mese piu sereno.</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_hero(all_expenses: pd.DataFrame, all_incomes: pd.DataFrame, selected_month: str) -> None:
-    image_path = Path(__file__).with_name("hero-couple-balance-transparent.png")
-    if not image_path.exists():
-        image_path = Path(__file__).with_name("hero-couple-balance.png")
+def render_hero(dataframe: pd.DataFrame) -> None:
+    image_path = Path(__file__).with_name("hero-robot-cutout.png")
     hero_image_html = ""
     if image_path.exists():
         encoded_image = base64.b64encode(image_path.read_bytes()).decode("utf-8")
         hero_image_html = (
             '<div class="hero-visual">'
             '<div class="hero-visual-frame">'
-            f'<img src="data:image/png;base64,{encoded_image}" alt="Robot che gestiscono risparmi di coppia" class="hero-image">'
+            f'<img src="data:image/png;base64,{encoded_image}" alt="Robot con salvadanaio" class="hero-image">'
             "</div>"
             "</div>"
         )
 
-    summary = build_home_financial_summary(all_expenses, all_incomes, selected_month)
-
-    with st.container(key="home_hero_shell"):
-        with st.container(key="hero_layout_shell"):
-            image_col, finance_col = st.columns([0.49, 0.51], vertical_alignment="top")
-            with image_col:
-                st.markdown('<div class="hero-left-stack">', unsafe_allow_html=True)
-                if hero_image_html:
-                    st.markdown(hero_image_html, unsafe_allow_html=True)
-                render_home_summary_panel(summary)
-                st.markdown('</div>', unsafe_allow_html=True)
-            with finance_col:
-                st.markdown('<div class="home-finance-column">', unsafe_allow_html=True)
-                render_home_financial_summary_panel(summary)
-                st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown(
+        f"""
+        <div class="hero-container" id="hero-container">
+            <div class="hero-card">
+                <div class="hero-layout">
+                    <div class="hero-meta">
+                        <h1 class="hero-title">Monitor spese personali e di coppia</h1>
+                        <p class="hero-copy">
+                            Uno spazio semplice per registrare le spese, vedere cosa hai speso e capire subito il saldo di coppia.
+                        </p>
+                        <div class="legend-row">
+                            <span class="legend-badge">Chi siamo</span>
+                            <span class="legend-badge">I tuoi risparmi</span>
+                            <span class="legend-badge">I tuoi movimenti</span>
+                        </div>
+                    </div>
+                    {hero_image_html}
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_main_content(
@@ -3829,67 +1839,38 @@ def render_main_content(
     all_incomes: pd.DataFrame,
     selected_month: str,
 ) -> None:
-    active_page = st.session_state.get("page", "home")
-
     if section == "Home":
-        return
+        st.caption("Scegli una card per entrare nella schermata dedicata all'operazione che vuoi eseguire.")
+        render_operation_cards(filtered_expenses)
 
     elif section == "Entrate":
-        clear_page_navigation_intent()
-        render_incomes_section(filtered_incomes, selected_month)
-
-    elif section == "Saldo di coppia":
-        st.session_state.page = "saldo_coppia"
-        render_couple_balance_page(selected_month)
+        render_month_navigation_bar(selected_month, "income_month")
+        render_incomes_section(filtered_incomes)
 
     elif section == "Uscite":
-        requested_filter = st.session_state.pop("expense_filter", None)
-        if requested_filter == "personali":
-            st.session_state.expense_type_filter = "Personali"
-        elif requested_filter == "condivise":
-            st.session_state.expense_type_filter = "Condivise"
-        elif requested_filter == "tutte":
-            st.session_state.expense_type_filter = "Tutte"
-            st.session_state.expense_category_filter = "Tutte"
-
-        st.session_state.page = "uscite"
-        expense_view: dict[str, pd.DataFrame | None] = {
-            "base_visible": None,
-            "rendered": None,
-        }
-
-        def render_expense_main_block() -> None:
-            base_visible_expenses, rendered_expenses = render_expense_header_block(filtered_expenses)
-            expense_view["base_visible"] = base_visible_expenses
-            expense_view["rendered"] = rendered_expenses
-
-        render_expense_section_layout(
-            month_label=selected_month,
-            render_main_block=render_expense_main_block,
-            render_lower_block=lambda: render_expense_lower_layout(
-                render_tools_block=lambda: render_expense_tools(
-                    expense_view["base_visible"] if isinstance(expense_view["base_visible"], pd.DataFrame) else pd.DataFrame()
-                ),
-                render_total_block=lambda: render_expense_total_sticky(
-                    expense_view["rendered"] if isinstance(expense_view["rendered"], pd.DataFrame) else pd.DataFrame()
-                ),
-                render_feed_block=lambda: render_expense_feed(
-                    expense_view["rendered"] if isinstance(expense_view["rendered"], pd.DataFrame) else pd.DataFrame()
-                ),
-                edit_mode=st.session_state.get("expense_edit_mode", False),
-                render_post_tools_block=(
-                    (lambda: render_expense_delete_actions(
-                        expense_view["rendered"] if isinstance(expense_view["rendered"], pd.DataFrame) else pd.DataFrame()
-                    ))
-                    if st.session_state.get("expense_delete_mode", False)
-                    else None
-                ),
-            ),
-            edit_mode=st.session_state.get("expense_edit_mode", False),
-        )
+        with st.container(key="expense_fixed_stack"):
+            render_month_navigation_bar(selected_month, "expense_month")
+            selected_type_view = render_expense_type_filter_bar()
+            selected_category = render_expense_category_filter_bar(filtered_expenses)
+            visible_expenses = filtered_expenses.copy()
+            if selected_type_view == "Personali":
+                visible_expenses = visible_expenses[visible_expenses["expense_type"] == "Personale"].copy()
+            elif selected_type_view == "Condivise":
+                visible_expenses = visible_expenses[visible_expenses["expense_type"] == "Condivisa"].copy()
+            if selected_category != "Tutte":
+                visible_expenses = visible_expenses[visible_expenses["category"] == selected_category].copy()
+            render_expense_total_sticky(visible_expenses)
+            render_expense_tools(visible_expenses)
+        if st.session_state.get("expense_edit_mode", False):
+            st.markdown('<div class="expense-edit-backdrop"></div>', unsafe_allow_html=True)
+        with st.container(key="expense_feed_scroll"):
+            if st.session_state.get("expense_edit_mode", False):
+                st.markdown('<div class="expense-edit-focus">', unsafe_allow_html=True)
+            render_expense_feed(visible_expenses)
+            if st.session_state.get("expense_edit_mode", False):
+                st.markdown("</div>", unsafe_allow_html=True)
 
     elif section == "Riepilogo":
-        clear_page_navigation_intent()
         render_month_navigation_bar(selected_month, "summary_month")
         st.caption("Tutte le spese visibili con i filtri attivi, con esportazione CSV.")
         render_expense_list(filtered_expenses)
@@ -3897,153 +1878,11 @@ def render_main_content(
         render_export_section(filtered_expenses)
 
     elif section == "Calendario":
-        clear_page_navigation_intent()
         render_calendar_section(filtered_expenses, filtered_incomes)
 
-
-def render_expense_section_layout(
-    *,
-    month_label: str,
-    render_main_block,
-    render_lower_block,
-    edit_mode: bool = False,
-) -> None:
-    with st.container(key="expense_section_shell"):
-        with st.container(key="expense_fixed_stack"):
-            with st.container(key="expense_month_row"):
-                render_month_navigation_bar(month_label, "expense_month")
-            with st.container(key="expense_main_block_frame"):
-                render_main_block()
-
-        if edit_mode:
-            st.markdown('<div class="expense-edit-backdrop"></div>', unsafe_allow_html=True)
-
-        render_lower_block()
-
-
-def render_expense_lower_layout(
-    *,
-    render_tools_block,
-    render_total_block,
-    render_feed_block,
-    edit_mode: bool = False,
-    render_post_tools_block=None,
-) -> None:
-    with st.container(key="expense_lower_shell"):
-        with st.container(key="expense_controls_row"):
-            tools_col, total_col = st.columns([0.6, 0.4], vertical_alignment="bottom")
-            with tools_col:
-                with st.container(key="expense_toolbar_frame"):
-                    render_tools_block()
-            with total_col:
-                render_total_block()
-
-        render_soft_section_separator("expense")
-
-        if render_post_tools_block is not None:
-            render_post_tools_block()
-
-        with st.container(key="expense_feed_scroll"):
-            if edit_mode:
-                st.markdown('<div class="expense-edit-focus">', unsafe_allow_html=True)
-            render_feed_block()
-            if edit_mode:
-                st.markdown("</div>", unsafe_allow_html=True)
-
-
-def render_income_section_layout(
-    *,
-    month_label: str | None,
-    render_main_block,
-    render_lower_block,
-    edit_mode: bool = False,
-) -> None:
-    with st.container(key="income_section_shell"):
-        with st.container(key="income_fixed_stack"):
-            if month_label is not None:
-                with st.container(key="income_month_row"):
-                    render_month_navigation_bar(month_label, "income_month")
-            with st.container(key="income_main_block_frame"):
-                render_main_block()
-
-        if edit_mode:
-            st.markdown('<div class="income-edit-backdrop"></div>', unsafe_allow_html=True)
-
-        render_lower_block()
-
-
-def render_income_lower_layout(
-    *,
-    render_tools_block,
-    render_total_block,
-    render_feed_block,
-    edit_mode: bool = False,
-) -> None:
-    with st.container(key="income_lower_shell"):
-        with st.container(key="income_controls_row"):
-            tools_col, total_col = st.columns([0.6, 0.4], vertical_alignment="bottom")
-            with tools_col:
-                with st.container(key="income_toolbar_frame"):
-                    render_tools_block()
-            with total_col:
-                render_total_block()
-
-        render_soft_section_separator("income")
-
-        with st.container(key="income_feed_scroll"):
-            if edit_mode:
-                st.markdown('<div class="income-edit-focus">', unsafe_allow_html=True)
-            render_feed_block()
-            if edit_mode:
-                st.markdown("</div>", unsafe_allow_html=True)
-
-
-def render_soft_section_separator(section_key: str) -> None:
-    with st.container(key=f"{section_key}_list_separator_row"):
-        st.markdown('<div class="expense-tools-divider"></div>', unsafe_allow_html=True)
-
-
-def render_section_header_layout(
-    *,
-    section_key: str,
-    month_label: str | None,
-    month_key_prefix: str,
-    render_main_block,
-    render_total_block,
-    render_tools_block,
-    render_feed_block,
-    edit_mode: bool = False,
-    focus_class: str | None = None,
-    backdrop_class: str | None = None,
-    render_post_tools_block=None,
-) -> None:
-    with st.container(key=f"{section_key}_section_shell"):
-        with st.container(key=f"{section_key}_fixed_stack"):
-            if month_label is not None:
-                render_month_navigation_bar(month_label, month_key_prefix)
-            with st.container(key=f"{section_key}_main_block_frame"):
-                render_main_block()
-            with st.container(key=f"{section_key}_controls_row"):
-                tools_col, total_col = st.columns([0.6, 0.4], vertical_alignment="center")
-                with tools_col:
-                    with st.container(key=f"{section_key}_toolbar_frame"):
-                        render_tools_block()
-                with total_col:
-                    render_total_block()
-            if render_post_tools_block is not None:
-                render_post_tools_block()
-
-            render_soft_section_separator(section_key)
-
-        if edit_mode and backdrop_class:
-            st.markdown(f'<div class="{backdrop_class}"></div>', unsafe_allow_html=True)
-
-        with st.container(key=f"{section_key}_feed_scroll"):
-            if edit_mode and focus_class:
-                st.markdown(f'<div class="{focus_class}">', unsafe_allow_html=True)
-            render_feed_block()
-            if edit_mode and focus_class:
-                st.markdown("</div>", unsafe_allow_html=True)
+    else:
+        st.caption("Promemoria e spese programmate, con una notifica per cio che richiede attenzione.")
+        st.info("Programma spese in arrivo. Qui vedrai promemoria, ricorrenze e spese da tenere d'occhio.")
 
 
 def render_section_navigation() -> str:
@@ -4053,10 +1892,10 @@ def render_section_navigation() -> str:
     with nav_col:
         section = st.radio(
             "Sezioni",
-            ["Home", "Calendario", "Saldo di coppia", "Entrate", "Uscite"],
+            ["Home", "Entrate", "Uscite", "Riepilogo", "Calendario", "Programma spese •"],
             horizontal=True,
             label_visibility="collapsed",
-            key="section_navigation_value",
+            key="current_section",
         )
     with action_col:
         if st.button(action_label, key="top_new_expense", use_container_width=True, type="primary"):
@@ -4065,14 +1904,7 @@ def render_section_navigation() -> str:
             else:
                 st.session_state.show_new_expense_modal = True
             st.rerun()
-    st.session_state.current_section = section
-    if section not in {"Uscite", "Saldo di coppia"}:
-        clear_page_navigation_intent()
-    elif section == "Uscite" and st.session_state.get("page") != "uscite":
-        st.session_state.page = "uscite"
-    elif section == "Saldo di coppia":
-        st.session_state.page = "saldo_coppia"
-    return section
+    return "Programma spese" if section == "Programma spese •" else section
 
 
 def render_month_navigation_bar(selected_month: str, key_prefix: str) -> str:
@@ -4121,52 +1953,91 @@ def render_calendar_section(expenses: pd.DataFrame, incomes: pd.DataFrame) -> No
         label_visibility="collapsed",
         key="calendar_content_filter",
     )
+    year, month_text = active_month_label.split("-")
+    year = int(year)
+    month = int(month_text)
 
-    calendar_data = build_calendar_data(
-        expenses,
-        incomes,
-        month_label=active_month_label,
-        content_filter=calendar_filter,
-        preview_limit=3,
-    )
+    month_expenses = expenses[expenses["month_label"] == active_month_label].copy() if not expenses.empty else expenses
+    month_incomes = incomes[incomes["month_label"] == active_month_label].copy() if not incomes.empty else incomes
+
+    if calendar_filter == "Entrate":
+        month_expenses = month_expenses.iloc[0:0].copy()
+    elif calendar_filter == "Uscite":
+        month_incomes = month_incomes.iloc[0:0].copy()
+
+    expense_day_totals = {}
+    if not month_expenses.empty:
+        expense_day_totals = (
+            month_expenses.groupby(month_expenses["expense_date"].dt.day)["amount"].sum().to_dict()
+        )
+
+    income_day_totals = {}
+    if not month_incomes.empty:
+        income_day_totals = (
+            month_incomes.groupby(month_incomes["income_date"].dt.day)["amount"].sum().to_dict()
+        )
+
+    expense_events: dict[int, list[str]] = {}
+    if not month_expenses.empty:
+        for _, row in month_expenses.sort_values("expense_date").iterrows():
+            day = int(row["expense_date"].day)
+            title = str(row.get("name") or row.get("description") or row.get("category") or "Spesa")
+            expense_events.setdefault(day, []).append(f"expense|{title}")
+
+    income_events: dict[int, list[str]] = {}
+    if not month_incomes.empty:
+        for _, row in month_incomes.sort_values("income_date").iterrows():
+            day = int(row["income_date"].day)
+            title = str(row.get("source") or row.get("description") or "Entrata")
+            income_events.setdefault(day, []).append(f"income|{title}")
+
+    weekdays = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"]
+    calendar_rows = calendar.Calendar(firstweekday=0).monthdatescalendar(year, month)
+    today = date.today()
 
     html_parts = [
         '<div class="calendar-shell">',
         '<div class="calendar-grid">',
     ]
 
-    for weekday in calendar_data["weekdays"]:
+    for weekday in weekdays:
         html_parts.append(f'<div class="calendar-weekday">{weekday}</div>')
 
-    for week in calendar_data["weeks"]:
-        for day in week["days"]:
+    for week in calendar_rows:
+        for day in week:
             classes = ["calendar-day"]
-            if not day["is_current_month"]:
+            if day.month != month:
                 classes.append("is-other-month")
-            if day["is_today"]:
+            if day == today:
                 classes.append("is-today")
 
+            day_events: list[str] = []
+            if day.month == month:
+                day_events.extend(expense_events.get(day.day, []))
+                day_events.extend(income_events.get(day.day, []))
+
             event_markup = []
-            for event in day["preview_events"]:
+            for event in day_events[:3]:
+                event_type, label = event.split("|", 1)
                 event_markup.append(
-                    f'<div class="calendar-event"><span class="calendar-event-dot {event["type"]}"></span><span class="calendar-event-text">{escape(event["display_label"])}</span></div>'
+                    f'<div class="calendar-event"><span class="calendar-event-dot {event_type}"></span><span class="calendar-event-text">{label}</span></div>'
                 )
-            if day["remaining_count"] > 0:
+            if len(day_events) > 3:
                 event_markup.append(
-                    f'<div class="calendar-event"><span class="calendar-event-text">+{day["remaining_count"]} altri</span></div>'
+                    f'<div class="calendar-event"><span class="calendar-event-text">+{len(day_events) - 3} altri</span></div>'
                 )
 
             total_text = ""
-            if day["is_current_month"]:
-                expense_total = float(day["total_expenses"])
-                income_total = float(day["total_incomes"])
+            if day.month == month:
+                expense_total = float(expense_day_totals.get(day.day, 0.0))
+                income_total = float(income_day_totals.get(day.day, 0.0))
                 if expense_total > 0 or income_total > 0:
                     total_text = f'<div class="calendar-day-total">Uscite {format_currency(expense_total)} · Entrate {format_currency(income_total)}</div>'
 
-            today_dot = '<span class="calendar-today-dot"></span>' if day["is_today"] else ""
+            today_dot = '<span class="calendar-today-dot"></span>' if day == today else ""
             html_parts.append(
                 f'<div class="{" ".join(classes)}">'
-                f'<div class="calendar-day-top"><div class="calendar-day-number">{day["day_number"]}</div>{today_dot}</div>'
+                f'<div class="calendar-day-top"><div class="calendar-day-number">{day.day}</div>{today_dot}</div>'
                 f"{total_text}"
                 f'<div class="calendar-event-list">{"".join(event_markup)}</div>'
                 "</div>"
@@ -4174,6 +2045,57 @@ def render_calendar_section(expenses: pd.DataFrame, incomes: pd.DataFrame) -> No
 
     html_parts.extend(["</div>", "</div>"])
     st.markdown("".join(html_parts), unsafe_allow_html=True)
+
+
+def render_home_counter(all_expenses: pd.DataFrame, all_incomes: pd.DataFrame, selected_month: str) -> None:
+    filters = st.session_state.get("filters", {})
+    selected_year = filters.get("year_label")
+    active_month_label = resolve_month_label(selected_month)
+    active_year = selected_year or active_month_label.split("-")[0]
+
+    scope_col, metrics_col = st.columns([0.24, 0.76], vertical_alignment="center")
+    with scope_col:
+        scope = st.segmented_control(
+            "Periodo home",
+            ["Mensile", "Annuale"],
+            default=st.session_state.get("home_counter_scope", "Mensile"),
+            key="home_counter_scope",
+            label_visibility="collapsed",
+        )
+
+    if scope == "Annuale":
+        scoped_expenses = all_expenses[all_expenses["month_label"].str.startswith(active_year)] if not all_expenses.empty else all_expenses
+        scoped_incomes = all_incomes[all_incomes["month_label"].str.startswith(active_year)] if not all_incomes.empty else all_incomes
+    else:
+        scoped_expenses = all_expenses[all_expenses["month_label"] == active_month_label] if not all_expenses.empty else all_expenses
+        scoped_incomes = all_incomes[all_incomes["month_label"] == active_month_label] if not all_incomes.empty else all_incomes
+
+    total_expenses = float(scoped_expenses["amount"].sum()) if not scoped_expenses.empty else 0.0
+    total_incomes = float(scoped_incomes["amount"].sum()) if not scoped_incomes.empty else 0.0
+    savings = total_incomes - total_expenses
+
+    with metrics_col:
+        st.markdown(
+            f"""
+            <div class="home-counter-wrap">
+                <div class="home-counter-grid">
+                    <div class="home-counter-item">
+                        <div class="home-counter-label">Spese</div>
+                        <div class="home-counter-value">{format_currency(total_expenses)}</div>
+                    </div>
+                    <div class="home-counter-item">
+                        <div class="home-counter-label">Entrate</div>
+                        <div class="home-counter-value">{format_currency(total_incomes)}</div>
+                    </div>
+                    <div class="home-counter-item">
+                        <div class="home-counter-label">Saldo</div>
+                        <div class="home-counter-value">{format_currency(savings)}</div>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 def render_sidebar_filters(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, str]:
@@ -4193,8 +2115,6 @@ def render_sidebar_filters(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     if st.sidebar.button("Vai alla home", use_container_width=False, type="tertiary"):
         st.session_state.current_view = "home"
         st.session_state.current_section = "Home"
-        st.session_state.pending_section_navigation_sync = True
-        clear_page_navigation_intent()
         st.rerun()
 
     st.sidebar.write("")
@@ -4216,10 +2136,6 @@ def render_sidebar_filters(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, str]:
         "filters",
         {"month_label": "Tutti", "category": "Tutte", "payer": "Tutti", "expense_type": "Tutte"},
     )
-    pending_overrides = dict(st.session_state.get("pending_sidebar_filter_overrides", {}))
-    if pending_overrides:
-        previous_filters = {**previous_filters, **pending_overrides}
-        st.session_state.pending_sidebar_filter_overrides = {}
     selected_month = previous_filters.get("month_label", "Tutti")
     selected_category = previous_filters.get("category", "Tutte")
     selected_payer = previous_filters.get("payer", "Tutti")
@@ -4322,9 +2238,14 @@ def render_dashboard(all_expenses: pd.DataFrame, all_incomes: pd.DataFrame, sele
     render_dashboard_card(
         col5,
         "SALDO COPPIA",
-        build_couple_balance_label(metrics["balance"]),
+        build_balance_label(metrics["balance"]),
         "balance",
     )
+
+    st.caption(
+        "Saldo coppia: valore positivo = l'altra persona deve soldi a me; valore negativo = io devo soldi all'altra persona."
+    )
+
 
 def render_dashboard_card(column, title: str, value: str, metric_key: str) -> None:
     label = f"{title}\n{value}"
@@ -4335,21 +2256,8 @@ def render_dashboard_card(column, title: str, value: str, metric_key: str) -> No
             use_container_width=True,
             type="secondary",
         ):
-            if metric_key == "total_month":
-                navigate_to_expenses("tutte")
-                st.session_state.current_view = "home"
-            elif metric_key == "my_personal":
-                navigate_to_expenses("personali")
-                st.session_state.current_view = "home"
-            elif metric_key == "shared_total":
-                navigate_to_expenses("condivise")
-                st.session_state.current_view = "home"
-            elif metric_key == "balance":
-                navigate_to_couple_balance()
-                st.session_state.current_view = "home"
-            else:
-                st.session_state.dashboard_metric = metric_key
-                st.session_state.current_view = "dashboard_detail"
+            st.session_state.dashboard_metric = metric_key
+            st.session_state.current_view = "dashboard_detail"
             st.rerun()
 
 
@@ -4713,22 +2621,6 @@ def render_expense_type_filter_bar() -> str:
 
 def render_expense_total_sticky(dataframe: pd.DataFrame) -> None:
     total_amount = float(dataframe["amount"].sum()) if not dataframe.empty else 0.0
-    current_username = str((st.session_state.current_user or {}).get("username", "") or "")
-    balance_text = ""
-    if current_username and not dataframe.empty:
-        partner_username = get_partner_username(current_username)
-        balance = compute_balance(current_username, partner_username, dataframe)
-        if balance < 0:
-            balance_text = f"Devo {format_currency(abs(balance))} a {partner_username}"
-        elif balance > 0:
-            balance_text = f"{partner_username} deve {format_currency(balance)}"
-        else:
-            balance_text = "Siamo in pari"
-    render_total_sticky_amount(total_amount, balance_text)
-
-
-def render_total_sticky_amount(total_amount: float, secondary_text: str = "") -> None:
-    secondary_html = f'<div class="expense-balance-pill">{escape(secondary_text)}</div>' if secondary_text else ""
     st.markdown(
         f"""
         <div class="expense-total-sticky">
@@ -4736,463 +2628,113 @@ def render_total_sticky_amount(total_amount: float, secondary_text: str = "") ->
                 <span class="expense-total-label">Totale</span>
                 <span class="expense-total-value">{format_currency(total_amount)}</span>
             </div>
-            {secondary_html}
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 
-def build_couple_balance_view_dataset(
-    dataframe: pd.DataFrame,
-    selected_status: str,
-    selected_category: str,
-) -> pd.DataFrame:
-    return filter_couple_balance_expenses(dataframe, selected_status, selected_category)
-
-
-def build_expense_view_dataset(
-    dataframe: pd.DataFrame,
-    selected_type_view: str,
-    selected_category: str,
-) -> pd.DataFrame:
-    visible_expenses = dataframe.copy()
-    if selected_type_view == "Personali":
-        visible_expenses = visible_expenses[visible_expenses["expense_type"] == "Personale"].copy()
-    elif selected_type_view == "Condivise":
-        visible_expenses = visible_expenses[visible_expenses["expense_type"] == "Condivisa"].copy()
-
-    if selected_category != "Tutte":
-        visible_expenses = visible_expenses[visible_expenses["category"] == selected_category].copy()
-
-    return visible_expenses
-
-
-def render_couple_balance_status_filter_bar() -> str:
-    options = ["Da regolare", "Pagate", "Tutte"]
-    current_value = st.session_state.get("couple_balance_status_filter", "Da regolare")
-    if current_value not in options:
-        current_value = "Da regolare"
-
-    return st.radio(
-        "Filtra stato saldo",
-        options,
-        index=options.index(current_value),
-        horizontal=True,
-        label_visibility="collapsed",
-        key="couple_balance_status_filter",
-    )
-
-
-def render_couple_balance_header_block(shared_expenses: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    with st.container(key="expense_header_content"):
-        with st.container(key="expense_primary_tabs_row"):
-            selected_status = render_couple_balance_status_filter_bar()
-        with st.container(key="expense_secondary_tabs_row"):
-            selected_category = render_expense_category_filter_bar(shared_expenses)
-
-        base_visible_expenses = build_couple_balance_view_dataset(
-            shared_expenses,
-            selected_status,
-            selected_category,
-        )
-        rendered_expenses = build_rendered_expense_dataset(base_visible_expenses)
-    return base_visible_expenses, rendered_expenses
-
-
-def render_expense_header_block(filtered_expenses: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    with st.container(key="expense_header_content"):
-        with st.container(key="expense_primary_tabs_row"):
-            selected_type_view = render_expense_type_filter_bar()
-        with st.container(key="expense_secondary_tabs_row"):
-            selected_category = render_expense_category_filter_bar(filtered_expenses)
-        base_visible_expenses = build_expense_view_dataset(
-            filtered_expenses,
-            selected_type_view,
-            selected_category,
-        )
-        rendered_expenses = build_rendered_expense_dataset(base_visible_expenses)
-    return base_visible_expenses, rendered_expenses
-
-
-def build_rendered_expense_dataset(dataframe: pd.DataFrame) -> pd.DataFrame:
-    if dataframe.empty:
-        return dataframe.copy()
-
-    rendered_expenses = dataframe.copy()
-    search_query = str(st.session_state.get("expense_search_query", "") or "").strip().lower()
-    if search_query:
-        rendered_expenses = rendered_expenses[
-            rendered_expenses["name"].fillna("").astype(str).str.lower().str.contains(search_query, na=False)
-        ].copy()
-
-    sort_mode = st.session_state.get("expense_sort_mode", "Data piu recente")
-    if rendered_expenses.empty:
-        return rendered_expenses
-
-    if sort_mode == "Importo maggiore":
-        return rendered_expenses.sort_values(by=["amount", "expense_date", "id"], ascending=[False, False, False]).copy()
-    if sort_mode == "Importo minore":
-        return rendered_expenses.sort_values(by=["amount", "expense_date", "id"], ascending=[True, False, False]).copy()
-    return rendered_expenses.sort_values(by=["expense_date", "id"], ascending=[False, False]).copy()
-
-
-def clear_expense_delete_mode() -> None:
-    st.session_state.expense_delete_mode = False
-    st.session_state.expense_delete_selected_ids = []
-    st.session_state.expense_delete_confirm_pending = False
-    st.session_state.expense_delete_select_all = False
-
-
-def render_expense_delete_actions(dataframe: pd.DataFrame) -> None:
-    visible_ids = [int(value) for value in dataframe["id"].tolist()] if not dataframe.empty else []
-    selected_ids = [int(value) for value in st.session_state.get("expense_delete_selected_ids", []) if int(value) in visible_ids]
-    st.session_state.expense_delete_selected_ids = selected_ids
-
-    all_selected = bool(visible_ids) and len(selected_ids) == len(visible_ids)
-    st.session_state.expense_delete_select_all = all_selected
-
-    with st.container(key="expense_delete_actions_row"):
-        select_col, count_col, action_col, confirm_col, cancel_col, _ = st.columns(
-            [0.16, 0.16, 0.16, 0.12, 0.12, 0.28],
-            vertical_alignment="center",
-        )
-        with select_col:
-            toggle_label = "Deseleziona tutte" if all_selected else "Seleziona tutte"
-            if st.button(
-                toggle_label,
-                key="expense_delete_toggle_all",
-                use_container_width=False,
-                type="secondary",
-                disabled=not visible_ids,
-            ):
-                next_selected = [] if all_selected else visible_ids
-                st.session_state.expense_delete_selected_ids = next_selected
-                st.session_state.expense_delete_confirm_pending = False
-                st.session_state.expense_delete_select_all = bool(next_selected) and len(next_selected) == len(visible_ids)
-                for expense_id in visible_ids:
-                    st.session_state[f"expense_delete_pick_{expense_id}"] = expense_id in next_selected
-                st.rerun()
-        with count_col:
-            selection_count = len(selected_ids)
-            count_label = "1 selezione" if selection_count == 1 else f"{selection_count} selezioni"
-            st.markdown(f'<div class="expense-delete-count">{count_label}</div>', unsafe_allow_html=True)
-        with action_col:
-            delete_disabled = not selected_ids
-            if st.button(
-                "elimina",
-                key="expense_delete_action",
-                use_container_width=False,
-                type="secondary",
-                disabled=delete_disabled,
-            ):
-                st.session_state.expense_delete_confirm_pending = True
-                st.rerun()
-        if st.session_state.get("expense_delete_confirm_pending", False) and selected_ids:
-            with confirm_col:
-                if st.button("conferma", key="expense_delete_confirm", use_container_width=False, type="secondary"):
-                    deleted_count = 0
-                    for expense_id in selected_ids:
-                        if delete_expense(expense_id, current_username):
-                            deleted_count += 1
-                    if deleted_count == 0:
-                        st.error("Non sei autorizzato a eliminare queste spese.")
-                        st.session_state.expense_delete_confirm_pending = False
-                        st.rerun()
-                    clear_expense_delete_mode()
-                    st.success("Spese eliminate con successo.")
-                    st.rerun()
-            with cancel_col:
-                if st.button("annulla", key="expense_delete_cancel", use_container_width=False, type="secondary"):
-                    st.session_state.expense_delete_confirm_pending = False
-                    st.rerun()
-
-
-def render_expense_tools(
-    dataframe: pd.DataFrame,
-    *,
-    allow_edit_mode: bool = True,
-    allow_delete_mode: bool = True,
-) -> None:
-    with st.container(key="expense_toolbar_shell"):
-        back_col, edit_col, sort_col, search_col, delete_col, _ = st.columns([0.08, 0.22, 0.08, 0.08, 0.08, 0.46], vertical_alignment="center")
-        with back_col:
-            with st.container(key="expense_toolbar_back_item"):
-                is_delete_mode = st.session_state.get("expense_delete_mode", False)
-                is_confirmed_search = bool(st.session_state.get("expense_search_confirmed", False) and st.session_state.get("expense_search_query", ""))
-                if st.button(
-                    "",
-                    key="expense_search_reset_button",
-                    use_container_width=False,
-                    type="secondary",
-                    icon=":material/arrow_back:",
-                    disabled=not (is_confirmed_search or is_delete_mode),
-                ):
-                        if is_delete_mode:
-                            clear_expense_delete_mode()
-                        else:
-                            st.session_state.expense_search_query = ""
-                            st.session_state.expense_search_confirmed = False
-                        st.rerun()
-        with edit_col:
-            with st.container(key="expense_toolbar_edit_item"):
+def render_expense_tools(dataframe: pd.DataFrame) -> None:
+    tools_col, _ = st.columns([0.32, 0.68], vertical_alignment="center")
+    with tools_col:
+        with st.container(key="expense_tools_row"):
+            edit_col, sort_col, search_col = st.columns([0.58, 0.21, 0.21], vertical_alignment="center")
+            with edit_col:
                 is_edit_mode = st.session_state.get("expense_edit_mode", False)
-                edit_label = "Modifica spesa"
-                edit_button_type = "primary" if is_edit_mode else "secondary"
-                if st.button(
-                    edit_label,
-                    key="expense_edit_mode_toggle",
-                    use_container_width=False,
-                    type=edit_button_type,
-                    disabled=not allow_edit_mode,
-                ):
-                    if not is_edit_mode:
-                        clear_expense_delete_mode()
+                edit_label = "✓" if is_edit_mode else "Modifica spesa"
+                if st.button(edit_label, key="expense_edit_mode_toggle", use_container_width=False, type="secondary"):
                     st.session_state.expense_edit_mode = not is_edit_mode
                     st.rerun()
-        with sort_col:
-            with st.container(key="expense_toolbar_sort_item"):
+            with sort_col:
                 with st.container(key="expense_sort_toggle"):
-                    with st.popover("", use_container_width=False, icon=":material/tune:"):
-                        with st.container(key="expense_sort_menu"):
-                            sort_options = [
-                                "Data piu recente",
-                                "Importo maggiore",
-                                "Importo minore",
-                            ]
-                            current_sort = st.session_state.get("expense_sort_mode", sort_options[0])
-                            selected_sort = st.radio(
-                                "Ordina spese",
-                                sort_options,
-                                index=sort_options.index(current_sort) if current_sort in sort_options else 0,
-                                label_visibility="collapsed",
-                                key="expense_sort_mode",
-                            )
-                            if selected_sort != current_sort:
-                                st.session_state.expense_sort_mode = selected_sort
-                                st.rerun()
-        with search_col:
-            with st.container(key="expense_toolbar_search_item"):
-                with st.container(key="expense_search_toggle"):
-                    with st.popover("", use_container_width=False, icon=":material/search:"):
-                        with st.container(key="expense_search_menu"):
-                            live_value = render_expense_live_search(
-                                st.session_state.get("expense_search_query", ""),
-                                key="expense_search_query_live",
-                                placeholder="Cerca per nome",
-                            )
-                            if live_value == EXPENSE_SEARCH_RESET_SIGNAL:
-                                if st.session_state.get("expense_search_query", "") or st.session_state.get("expense_search_confirmed", False):
-                                    st.session_state.expense_search_query = ""
-                                    st.session_state.expense_search_confirmed = False
-                                    st.rerun()
-                            elif isinstance(live_value, str) and live_value.startswith(EXPENSE_SEARCH_CONFIRM_PREFIX):
-                                confirmed_value = live_value.removeprefix(EXPENSE_SEARCH_CONFIRM_PREFIX)
-                                st.session_state.expense_search_query = confirmed_value
-                                st.session_state.expense_search_confirmed = bool(confirmed_value.strip())
-                                st.rerun()
-                            elif live_value != st.session_state.get("expense_search_query", ""):
-                                st.session_state.expense_search_query = live_value
-                                if not str(live_value).strip():
-                                    st.session_state.expense_search_confirmed = False
-                                st.rerun()
-        with delete_col:
-            with st.container(key="expense_toolbar_delete_item"):
-                with st.container(key="expense_delete_toggle"):
-                    delete_button_type = "primary" if is_delete_mode else "secondary"
-                    if st.button(
-                        "",
-                        key="expense_delete_mode_toggle",
-                        use_container_width=False,
-                        type=delete_button_type,
-                        icon=":material/delete_outline:",
-                        disabled=not allow_delete_mode,
-                    ):
-                        if is_delete_mode:
-                            clear_expense_delete_mode()
-                        else:
-                            st.session_state.expense_edit_mode = False
-                            st.session_state.expense_delete_mode = True
-                            st.session_state.expense_delete_confirm_pending = False
-                            st.session_state.expense_delete_selected_ids = []
+                    if st.button("≡", key="expense_sort_toggle_button", use_container_width=False, type="secondary"):
+                        is_open = st.session_state.get("show_expense_sort_menu", False)
+                        st.session_state.show_expense_sort_menu = not is_open
+                        st.session_state.show_expense_search_menu = False
                         st.rerun()
+                if st.session_state.get("show_expense_sort_menu", False):
+                    with st.container(key="expense_sort_menu"):
+                        sort_options = [
+                            "Data piu recente",
+                            "Importo maggiore",
+                            "Importo minore",
+                        ]
+                        current_sort = st.session_state.get("expense_sort_mode", sort_options[0])
+                        selected_sort = st.radio(
+                            "Ordina spese",
+                            sort_options,
+                            index=sort_options.index(current_sort) if current_sort in sort_options else 0,
+                            label_visibility="collapsed",
+                            key="expense_sort_mode",
+                        )
+                        if selected_sort != current_sort:
+                            st.session_state.expense_sort_mode = selected_sort
+                            st.rerun()
+            with search_col:
+                with st.container(key="expense_search_toggle"):
+                    if st.button("⌕", key="expense_search_toggle_button", use_container_width=False, type="secondary"):
+                        is_open = st.session_state.get("show_expense_search_menu", False)
+                        st.session_state.show_expense_search_menu = not is_open
+                        st.session_state.show_expense_sort_menu = False
+                        st.rerun()
+                if st.session_state.get("show_expense_search_menu", False):
+                    with st.container(key="expense_search_menu"):
+                        st.text_input(
+                            "Cerca spesa",
+                            value=st.session_state.get("expense_search_query", ""),
+                            key="expense_search_query",
+                            placeholder="Cerca per nome",
+                            label_visibility="collapsed",
+                        )
 
 def render_expense_feed(dataframe: pd.DataFrame) -> None:
     if dataframe.empty:
-        if str(st.session_state.get("expense_search_query", "") or "").strip():
-            st.info("Nessuna spesa trovata con questa ricerca.")
-        else:
-            st.info("Nessuna spesa trovata con i filtri selezionati.")
+        st.info("Nessuna spesa trovata con i filtri selezionati.")
         return
 
+    search_query = str(st.session_state.get("expense_search_query", "") or "").strip().lower()
+    if search_query:
+        dataframe = dataframe[
+            dataframe["name"].fillna("").astype(str).str.lower().str.contains(search_query, na=False)
+        ].copy()
+        if dataframe.empty:
+            st.info("Nessuna spesa trovata con questa ricerca.")
+            return
+
+    sort_mode = st.session_state.get("expense_sort_mode", "Data piu recente")
+    if sort_mode == "Importo maggiore":
+        ordered_expenses = dataframe.sort_values(by=["amount", "expense_date", "id"], ascending=[False, False, False]).copy()
+    elif sort_mode == "Importo minore":
+        ordered_expenses = dataframe.sort_values(by=["amount", "expense_date", "id"], ascending=[True, False, False]).copy()
+    else:
+        ordered_expenses = dataframe.sort_values(by=["expense_date", "id"], ascending=[False, False]).copy()
     edit_mode = st.session_state.get("expense_edit_mode", False)
-    delete_mode = st.session_state.get("expense_delete_mode", False)
-    current_username = str((st.session_state.current_user or {}).get("username", "") or "")
-    partner_username = get_partner_username(current_username) if current_username else ""
-    visible_ids = {int(value) for value in dataframe["id"].tolist()}
-    selected_ids = {
-        int(value)
-        for value in st.session_state.get("expense_delete_selected_ids", [])
-        if int(value) in visible_ids
-    }
-    st.session_state.expense_delete_selected_ids = sorted(selected_ids)
-    next_selected_ids: list[int] = []
     st.markdown('<div class="expense-list">', unsafe_allow_html=True)
-    for _, row in dataframe.iterrows():
-        expense_id = int(row["id"])
+    for _, row in ordered_expenses.iterrows():
         expense_name = str(row.get("name") or row.get("description") or "Spesa")
         date_label = row["expense_date"].strftime("%d/%m")
-        paid_by_username = str(row.get("paid_by") or "")
-        amount_modifier = ""
-        if current_username and paid_by_username == current_username:
-            amount_modifier = " expense-cell-amount-self"
-        elif partner_username and paid_by_username == partner_username:
-            amount_modifier = " expense-cell-amount-partner"
-        with st.container(key=f"expense_row_{expense_id}"):
-            row_layout = [0.055, 0.125, 0.27, 0.19, 0.145, 0.11, 0.175] if delete_mode else [0.14, 0.28, 0.2, 0.16, 0.14, 0.18]
-            row_cols = st.columns(row_layout, vertical_alignment="center")
-            col_offset = 0
-            if delete_mode:
-                with row_cols[0]:
-                    checkbox_key = f"expense_delete_pick_{expense_id}"
-                    if checkbox_key not in st.session_state:
-                        st.session_state[checkbox_key] = expense_id in selected_ids
-                    with st.container(key=f"expense_delete_row_toggle_{expense_id}"):
-                        is_checked = st.checkbox(
-                            f"Seleziona spesa {expense_id}",
-                            key=checkbox_key,
-                            label_visibility="collapsed",
-                        )
-                    if is_checked:
-                        next_selected_ids.append(expense_id)
-                col_offset = 1
-            with row_cols[0 + col_offset]:
+        with st.container(key=f"expense_row_{int(row['id'])}"):
+            row_cols = st.columns([0.14, 0.28, 0.2, 0.16, 0.14, 0.18], vertical_alignment="center")
+            with row_cols[0]:
                 st.markdown(f'<div class="expense-cell expense-cell-secondary">{date_label}</div>', unsafe_allow_html=True)
-            with row_cols[1 + col_offset]:
+            with row_cols[1]:
                 if edit_mode:
-                    if st.button(expense_name, key=f"expense_name_pick_{expense_id}", use_container_width=True, type="tertiary"):
-                        st.session_state.preselected_expense_id = expense_id
+                    if st.button(expense_name, key=f"expense_name_pick_{int(row['id'])}", use_container_width=True, type="tertiary"):
+                        st.session_state.preselected_expense_id = int(row["id"])
                         st.session_state.show_edit_expense_modal = True
                         st.rerun()
                 else:
                     st.markdown(f'<div class="expense-cell expense-cell-name">{expense_name}</div>', unsafe_allow_html=True)
-            with row_cols[2 + col_offset]:
-                st.markdown(f'<div class="expense-cell expense-cell-secondary">{row["category"]}</div>', unsafe_allow_html=True)
-            with row_cols[3 + col_offset]:
-                st.markdown(f'<div class="expense-cell expense-cell-user">{row["paid_by"]}</div>', unsafe_allow_html=True)
-            with row_cols[4 + col_offset]:
-                st.markdown(f'<div class="expense-cell expense-cell-secondary">{row["expense_type"]}</div>', unsafe_allow_html=True)
-            with row_cols[5 + col_offset]:
-                st.markdown(
-                    f'<div class="expense-cell expense-cell-amount{amount_modifier}">{format_currency(float(row["amount"]))}</div>',
-                    unsafe_allow_html=True,
-                )
-            st.markdown('<div class="expense-card"></div>', unsafe_allow_html=True)
-    if delete_mode:
-        normalized_selected_ids = sorted(next_selected_ids)
-        st.session_state.expense_delete_selected_ids = normalized_selected_ids
-        st.session_state.expense_delete_select_all = bool(normalized_selected_ids) and len(normalized_selected_ids) == len(visible_ids)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def render_couple_balance_total(dataframe: pd.DataFrame) -> None:
-    unsettled_expenses = dataframe[~dataframe["is_settled"].astype(bool)].copy() if not dataframe.empty else dataframe
-    unsettled_total = float(unsettled_expenses["amount"].sum()) if not unsettled_expenses.empty else 0.0
-    current_username = str((st.session_state.current_user or {}).get("username", "") or "")
-    balance = compute_couple_balance(current_username, dataframe)
-    render_total_sticky_amount(unsettled_total, build_couple_balance_label(balance))
-
-
-def render_couple_balance_feed(dataframe: pd.DataFrame) -> None:
-    if dataframe.empty:
-        if str(st.session_state.get("expense_search_query", "") or "").strip():
-            st.info("Nessuna spesa condivisa trovata con questa ricerca.")
-        else:
-            st.info("Nessuna spesa condivisa trovata con i filtri selezionati.")
-        return
-
-    current_username = str((st.session_state.current_user or {}).get("username", "") or "")
-    st.markdown('<div class="expense-list">', unsafe_allow_html=True)
-    for _, row in dataframe.iterrows():
-        expense_id = int(row["id"])
-        is_settled = bool(row.get("is_settled", False))
-        expense_name = str(row.get("name") or row.get("description") or "Spesa condivisa")
-        date_label = row["expense_date"].strftime("%d/%m")
-        status_label = "Pagata" if is_settled else "Da regolare"
-        status_class = "couple-balance-status-settled" if is_settled else "couple-balance-status-open"
-        action_label = "Ricevuta" if str(row.get("paid_by") or "") == current_username else "Pagata"
-
-        with st.container(key=f"couple_balance_row_{expense_id}"):
-            row_cols = st.columns([0.11, 0.24, 0.15, 0.13, 0.13, 0.12, 0.12], vertical_alignment="center")
-            with row_cols[0]:
-                st.markdown(f'<div class="expense-cell expense-cell-secondary">{date_label}</div>', unsafe_allow_html=True)
-            with row_cols[1]:
-                st.markdown(f'<div class="expense-cell expense-cell-name">{expense_name}</div>', unsafe_allow_html=True)
             with row_cols[2]:
                 st.markdown(f'<div class="expense-cell expense-cell-secondary">{row["category"]}</div>', unsafe_allow_html=True)
             with row_cols[3]:
                 st.markdown(f'<div class="expense-cell expense-cell-user">{row["paid_by"]}</div>', unsafe_allow_html=True)
             with row_cols[4]:
-                st.markdown(
-                    f'<div class="expense-cell expense-cell-amount">{format_currency(float(row["amount"]))}</div>',
-                    unsafe_allow_html=True,
-                )
+                st.markdown(f'<div class="expense-cell expense-cell-secondary">{row["expense_type"]}</div>', unsafe_allow_html=True)
             with row_cols[5]:
-                st.markdown(
-                    f'<div class="expense-cell"><span class="couple-balance-status-pill {status_class}">{status_label}</span></div>',
-                    unsafe_allow_html=True,
-                )
-            with row_cols[6]:
-                checkbox_value = st.checkbox(
-                    action_label,
-                    value=is_settled,
-                    key=f"couple_balance_toggle_{expense_id}",
-                    label_visibility="visible",
-                )
-                if checkbox_value != is_settled:
-                    update_expense_settled(expense_id, checkbox_value)
-                    st.rerun()
+                st.markdown(f'<div class="expense-cell expense-cell-amount">{format_currency(float(row["amount"]))}</div>', unsafe_allow_html=True)
             st.markdown('<div class="expense-card"></div>', unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
-
-
-def render_couple_balance_page(selected_month: str) -> None:
-    shared_expenses = get_shared_expenses()
-    current_user = st.session_state.current_user or {}
-    current_username = str(current_user.get("username", "") or "")
-    if current_username:
-        shared_expenses = get_visible_expenses(shared_expenses, current_username)
-
-    if selected_month != "Tutti" and not shared_expenses.empty:
-        shared_expenses = shared_expenses[shared_expenses["month_label"] == selected_month].copy()
-
-    balance_view: dict[str, pd.DataFrame | None] = {
-        "base_visible": None,
-        "rendered": None,
-    }
-
-    def render_balance_main_block() -> None:
-        base_visible_expenses, rendered_expenses = render_couple_balance_header_block(shared_expenses)
-        balance_view["base_visible"] = base_visible_expenses
-        balance_view["rendered"] = rendered_expenses
-
-    render_section_header_layout(
-        section_key="expense",
-        month_label=selected_month,
-        month_key_prefix="expense_month",
-        render_main_block=render_balance_main_block,
-        render_tools_block=lambda: render_expense_tools(
-            balance_view["base_visible"] if isinstance(balance_view["base_visible"], pd.DataFrame) else pd.DataFrame(),
-            allow_edit_mode=False,
-            allow_delete_mode=False,
-        ),
-        render_total_block=lambda: render_couple_balance_total(shared_expenses),
-        render_feed_block=lambda: render_couple_balance_feed(
-            balance_view["rendered"] if isinstance(balance_view["rendered"], pd.DataFrame) else pd.DataFrame()
-        ),
-        render_post_tools_block=None,
-        edit_mode=False,
-    )
 
 
 def render_edit_section(dataframe: pd.DataFrame) -> None:
@@ -5220,7 +2762,7 @@ def render_edit_section(dataframe: pd.DataFrame) -> None:
 
     selected_label = st.selectbox("Scegli una spesa", option_labels, index=default_index)
     selected_expense_id = options[selected_label]
-    expense = get_expense_by_id(selected_expense_id, current_username)
+    expense = get_expense_by_id(selected_expense_id)
 
     if expense is None:
         st.warning("La spesa selezionata non esiste piu.")
@@ -5320,9 +2862,8 @@ def render_edit_section(dataframe: pd.DataFrame) -> None:
                 for error in errors:
                     st.error(error)
             else:
-                updated = update_expense(
+                update_expense(
                     expense_id=selected_expense_id,
-                    current_username=current_username,
                     expense_date=expense_date,
                     amount=amount,
                     name=name,
@@ -5333,20 +2874,15 @@ def render_edit_section(dataframe: pd.DataFrame) -> None:
                     split_type=split_type,
                     split_ratio=split_ratio,
                 )
-                if updated:
-                    st.session_state.show_edit_expense_modal = False
-                    st.success("Spesa aggiornata con successo.")
-                    st.rerun()
-                else:
-                    st.error("Non sei autorizzato a modificare questa spesa.")
+                st.session_state.show_edit_expense_modal = False
+                st.success("Spesa aggiornata con successo.")
+                st.rerun()
 
         if delete_clicked:
-            if delete_expense(selected_expense_id, current_username):
-                st.session_state.show_edit_expense_modal = False
-                st.success("Spesa eliminata con successo.")
-                st.rerun()
-            else:
-                st.error("Non sei autorizzato a eliminare questa spesa.")
+            delete_expense(selected_expense_id)
+            st.session_state.show_edit_expense_modal = False
+            st.success("Spesa eliminata con successo.")
+            st.rerun()
 
 
 def render_charts(dataframe: pd.DataFrame) -> None:
@@ -5490,53 +3026,97 @@ def render_recent_expenses_expander(dataframe: pd.DataFrame) -> None:
 
 
 
-def render_summary_workspace(filtered_expenses: pd.DataFrame, filtered_incomes: pd.DataFrame) -> None:
-    controls_col, action_col = st.columns([0.82, 0.18], vertical_alignment="center")
-    with controls_col:
-        show_analysis = st.toggle(
-            "Mostra analisi",
-            value=bool(st.session_state.get("summary_show_analysis", False)),
-            key="summary_show_analysis_toggle",
-        )
-        st.session_state.summary_show_analysis = show_analysis
-    with action_col:
-        if st.button("Aggiungi categoria", key="summary_add_category_toggle", use_container_width=True, type="secondary"):
-            st.session_state.summary_show_add_category = not bool(st.session_state.get("summary_show_add_category", False))
-            st.rerun()
+def render_operation_cards(dataframe: pd.DataFrame) -> None:
+    cards = [
+        {
+            "title": "Nuova spesa",
+            "subtitle": "Inserisci una nuova spesa personale o condivisa.",
+            "view": "new_expense",
+        },
+        {
+            "title": "Nuova entrata",
+            "subtitle": "Registra una nuova entrata mensile.",
+            "view": "new_income",
+        },
+        {
+            "title": "Modifica spesa",
+            "subtitle": "Apri la schermata per aggiornare o eliminare un movimento.",
+            "view": "edit_expense",
+        },
+        {
+            "title": "Aggiungi categoria",
+            "subtitle": "Crea una nuova categoria da usare nei prossimi inserimenti.",
+            "view": "add_category",
+        },
+        {
+            "title": "Analisi",
+            "subtitle": "Guarda grafici e andamento mensile in una schermata dedicata.",
+            "view": "analysis",
+        },
+    ]
 
-    if st.session_state.get("summary_show_add_category", False):
-        open_section("Aggiungi categoria", "Una nuova categoria sara disponibile nei form delle spese.")
-        render_add_category_form()
-        close_section()
-        st.write("")
-
-    open_section("Riepilogo", "Elenco completo delle spese con i filtri attivi.")
-    render_expense_list(filtered_expenses)
-    st.write("")
-    render_export_section(filtered_expenses)
-    close_section()
-
-    if st.session_state.get("summary_show_analysis", False):
-        st.write("")
-        open_section("Analisi", "Grafici e confronto tra entrate e uscite del periodo filtrato.")
-        render_charts(filtered_expenses)
-        st.write("")
-        render_income_expense_analysis(filtered_incomes, filtered_expenses)
-        close_section()
+    columns = st.columns(2, gap="large")
+    for index, card in enumerate(cards):
+        with columns[index % 2]:
+            st.markdown(
+                """
+                <style>
+                    div.stButton > button[kind="secondary"] {
+                        min-height: 116px !important;
+                        padding-top: 0.95rem !important;
+                        padding-bottom: 0.95rem !important;
+                    }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+            label = card["title"]
+            if st.button(
+                label.upper(),
+                key=f"operation_card_{card['view']}",
+                use_container_width=True,
+                type="secondary",
+            ):
+                if card["view"] == "new_expense":
+                    st.session_state.show_new_expense_modal = True
+                elif card["view"] == "new_income":
+                    st.session_state.show_new_income_modal = True
+                elif card["view"] == "edit_expense":
+                    st.session_state.show_edit_expense_modal = True
+                else:
+                    st.session_state.current_view = card["view"]
+                st.rerun()
 
 
 def render_operation_detail_page(filtered_expenses: pd.DataFrame, filtered_incomes: pd.DataFrame) -> None:
     current_view = st.session_state.get("current_view", "home")
     view_config = {
-        "summary": (
-            "Riepilogo",
-            "Tutte le spese visibili con i filtri attivi, con esportazione e strumenti utili.",
+        "new_expense": (
+            "Nuova spesa",
+            "Compila il form qui sotto per registrare una nuova spesa.",
+        ),
+        "new_income": (
+            "Nuova entrata",
+            "Compila il form qui sotto per registrare una nuova entrata.",
+        ),
+        "edit_expense": (
+            "Modifica spesa",
+            "Seleziona una spesa esistente e aggiorna i campi necessari.",
+        ),
+        "add_category": (
+            "Aggiungi categoria",
+            "Crea una nuova categoria personalizzata per organizzare meglio le spese.",
+        ),
+        "analysis": (
+            "Analisi",
+            "Una vista piu calma per capire come stai spendendo nel tempo.",
         ),
     }
 
     if current_view not in view_config:
-        st.session_state.current_view = "summary"
-        current_view = "summary"
+        st.session_state.current_view = "home"
+        st.session_state.current_section = "Home"
+        st.rerun()
 
     title, subtitle = view_config[current_view]
     st.markdown(
@@ -5557,12 +3137,29 @@ def render_operation_detail_page(filtered_expenses: pd.DataFrame, filtered_incom
     if back_clicked:
         st.session_state.current_view = "home"
         st.session_state.current_section = "Home"
-        st.session_state.pending_section_navigation_sync = True
         st.rerun()
     info_col.caption("Usa la sidebar per mantenere i filtri attivi anche nelle schermate operative.")
 
-    if current_view == "summary":
-        render_summary_workspace(filtered_expenses, filtered_incomes)
+    if current_view == "new_expense":
+        render_create_form()
+    elif current_view == "new_income":
+        open_section("Nuova entrata", "Inserimento rapido di una nuova entrata.")
+        render_create_income_form()
+        close_section()
+    elif current_view == "edit_expense":
+        open_section("Modifica spesa", "Aggiorna o elimina una spesa esistente.")
+        render_edit_section(filtered_expenses)
+        close_section()
+    elif current_view == "add_category":
+        open_section("Aggiungi categoria", "Una nuova categoria sara disponibile nei form delle spese.")
+        render_add_category_form()
+        close_section()
+    elif current_view == "analysis":
+        open_section("Analisi", "Grafici e confronto tra entrate e uscite del periodo filtrato.")
+        render_charts(filtered_expenses)
+        st.write("")
+        render_income_expense_analysis(filtered_incomes, filtered_expenses)
+        close_section()
 
 
 def render_add_category_form() -> None:
@@ -5570,7 +3167,7 @@ def render_add_category_form() -> None:
         category_name = st.text_input("Nome nuova categoria")
         submitted = st.form_submit_button("Salva categoria", use_container_width=True)
         if submitted:
-            success, message = add_category(category_name)
+            success, message, *_ = add_category(category_name)
             if success:
                 st.success(message)
                 st.rerun()
@@ -5626,125 +3223,57 @@ def render_create_income_form() -> None:
 
 
 def render_income_tools() -> None:
-    with st.container(key="income_toolbar_shell"):
-        back_col, edit_col, sort_col, search_col, _ = st.columns([0.08, 0.22, 0.08, 0.08, 0.54], vertical_alignment="center")
-        with back_col:
-            with st.container(key="income_toolbar_back_item"):
-                is_confirmed_search = bool(
-                    st.session_state.get("income_search_confirmed", False)
-                    and st.session_state.get("income_search_query", "")
-                )
-                if st.button(
-                    "",
-                    key="income_search_reset_button",
-                    use_container_width=False,
-                    type="secondary",
-                    icon=":material/arrow_back:",
-                    disabled=not is_confirmed_search,
-                ):
-                    st.session_state.income_search_query = ""
-                    st.session_state.income_search_confirmed = False
-                    st.rerun()
+    tools_col, _ = st.columns([0.36, 0.64], vertical_alignment="center")
+    with tools_col:
+        edit_col, sort_col, search_col = st.columns([0.58, 0.21, 0.21], vertical_alignment="center")
         with edit_col:
-            with st.container(key="income_toolbar_edit_item"):
-                is_edit_mode = st.session_state.get("income_edit_mode", False)
-                edit_button_type = "primary" if is_edit_mode else "secondary"
-                if st.button("Modifica entrata", key="income_edit_mode_toggle", use_container_width=False, type=edit_button_type):
-                    st.session_state.income_edit_mode = not is_edit_mode
-                    st.rerun()
+            is_edit_mode = st.session_state.get("income_edit_mode", False)
+            edit_label = "✓" if is_edit_mode else "Modifica entrata"
+            if st.button(edit_label, key="income_edit_mode_toggle", use_container_width=False, type="secondary"):
+                st.session_state.income_edit_mode = not is_edit_mode
+                st.rerun()
         with sort_col:
-            with st.container(key="income_toolbar_sort_item"):
-                with st.container(key="income_sort_toggle"):
-                    with st.popover("", use_container_width=False, icon=":material/tune:"):
-                        with st.container(key="income_sort_menu"):
-                            sort_options = [
-                                "Data piu recente",
-                                "Importo maggiore",
-                                "Importo minore",
-                            ]
-                            current_sort = st.session_state.get("income_sort_mode", sort_options[0])
-                            selected_sort = st.radio(
-                                "Ordina entrate",
-                                sort_options,
-                                index=sort_options.index(current_sort) if current_sort in sort_options else 0,
-                                label_visibility="collapsed",
-                                key="income_sort_mode",
-                            )
-                            if selected_sort != current_sort:
-                                st.session_state.income_sort_mode = selected_sort
-                                st.rerun()
+            with st.container(key="income_sort_toggle"):
+                if st.button("≡", key="income_sort_toggle_button", use_container_width=False, type="secondary"):
+                    is_open = st.session_state.get("show_income_sort_menu", False)
+                    st.session_state.show_income_sort_menu = not is_open
+                    st.session_state.show_income_search_menu = False
+                    st.rerun()
+            if st.session_state.get("show_income_sort_menu", False):
+                with st.container(key="income_sort_menu"):
+                    sort_options = [
+                        "Data piu recente",
+                        "Importo maggiore",
+                        "Importo minore",
+                    ]
+                    current_sort = st.session_state.get("income_sort_mode", sort_options[0])
+                    selected_sort = st.radio(
+                        "Ordina entrate",
+                        sort_options,
+                        index=sort_options.index(current_sort) if current_sort in sort_options else 0,
+                        label_visibility="collapsed",
+                        key="income_sort_mode",
+                    )
+                    if selected_sort != current_sort:
+                        st.session_state.income_sort_mode = selected_sort
+                        st.rerun()
         with search_col:
-            with st.container(key="income_toolbar_search_item"):
-                with st.container(key="income_search_toggle"):
-                    with st.popover("", use_container_width=False, icon=":material/search:"):
-                        with st.container(key="income_search_menu"):
-                            live_value = render_live_search(
-                                st.session_state.get("income_search_query", ""),
-                                key="income_search_query_live",
-                                placeholder="Cerca per nome",
-                            )
-                            if live_value == EXPENSE_SEARCH_RESET_SIGNAL:
-                                if st.session_state.get("income_search_query", "") or st.session_state.get("income_search_confirmed", False):
-                                    st.session_state.income_search_query = ""
-                                    st.session_state.income_search_confirmed = False
-                                    st.rerun()
-                            elif isinstance(live_value, str) and live_value.startswith(EXPENSE_SEARCH_CONFIRM_PREFIX):
-                                confirmed_value = live_value.removeprefix(EXPENSE_SEARCH_CONFIRM_PREFIX)
-                                st.session_state.income_search_query = confirmed_value
-                                st.session_state.income_search_confirmed = bool(confirmed_value.strip())
-                                st.rerun()
-                            elif live_value != st.session_state.get("income_search_query", ""):
-                                st.session_state.income_search_query = live_value
-                                if not str(live_value).strip():
-                                    st.session_state.income_search_confirmed = False
-                                st.rerun()
-
-
-def render_income_info_block(top_source: str, latest_date: str) -> None:
-    with st.container(key="income_header_info"):
-        active_focus = st.session_state.get("income_info_focus", "source")
-        with st.container(key="income_info_tabs_row"):
-            source_col, latest_col = st.columns(2, vertical_alignment="center")
-            with source_col:
-                with st.container(key="income_info_source_tab"):
-                    if st.button(
-                        "Fonte principale",
-                        key="income_info_source_button",
-                        use_container_width=True,
-                        type="primary" if active_focus == "source" else "secondary",
-                    ):
-                        st.session_state.income_info_focus = "source"
-                        st.rerun()
-            with latest_col:
-                with st.container(key="income_info_latest_tab"):
-                    if st.button(
-                        "Ultima entrata",
-                        key="income_info_latest_button",
-                        use_container_width=True,
-                        type="primary" if active_focus == "latest" else "secondary",
-                    ):
-                        st.session_state.income_info_focus = "latest"
-                        st.rerun()
-
-        active_focus = st.session_state.get("income_info_focus", "source")
-        with st.container(key="income_info_value_row"):
-            source_value = f'<div class="income-info-active-value">{escape(str(top_source))}</div>' if active_focus == "source" else ""
-            latest_value = f'<div class="income-info-active-value">{escape(str(latest_date))}</div>' if active_focus == "latest" else ""
-            st.markdown(
-                f"""
-                <div class="income-info-value-grid">
-                    <div class="income-info-value-cell">{source_value}</div>
-                    <div class="income-info-value-cell">{latest_value}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-
-def render_income_header_block(top_source: str, latest_date: str) -> None:
-    with st.container(key="income_header_content"):
-        render_income_info_block(str(top_source), latest_date)
-
+            with st.container(key="income_search_toggle"):
+                if st.button("⌕", key="income_search_toggle_button", use_container_width=False, type="secondary"):
+                    is_open = st.session_state.get("show_income_search_menu", False)
+                    st.session_state.show_income_search_menu = not is_open
+                    st.session_state.show_income_sort_menu = False
+                    st.rerun()
+            if st.session_state.get("show_income_search_menu", False):
+                with st.container(key="income_search_menu"):
+                    st.text_input(
+                        "Cerca entrata",
+                        value=st.session_state.get("income_search_query", ""),
+                        key="income_search_query",
+                        placeholder="Cerca per nome",
+                        label_visibility="collapsed",
+                    )
+h
 
 def render_edit_income_section(dataframe: pd.DataFrame) -> None:
     if dataframe.empty:
@@ -5766,7 +3295,7 @@ def render_edit_income_section(dataframe: pd.DataFrame) -> None:
 
     selected_label = st.selectbox("Scegli un'entrata", option_labels, index=default_index)
     selected_income_id = options[selected_label]
-    income = get_income_by_id(selected_income_id, current_username)
+    income = get_income_by_id(selected_income_id)
 
     if income is None:
         st.warning("L'entrata selezionata non esiste piu.")
@@ -5789,64 +3318,45 @@ def render_edit_income_section(dataframe: pd.DataFrame) -> None:
                 for error in errors:
                     st.error(error)
             else:
-                updated = update_income(
+                update_income(
                     income_id=selected_income_id,
-                    current_username=current_username,
                     income_date=income_date,
                     amount=amount,
                     source=source,
                     description=description,
                 )
-                if updated:
-                    st.session_state.show_edit_income_modal = False
-                    st.success("Entrata aggiornata con successo.")
-                    st.rerun()
-                else:
-                    st.error("Non sei autorizzato a modificare questa entrata.")
+                st.session_state.show_edit_income_modal = False
+                st.success("Entrata aggiornata con successo.")
+                st.rerun()
 
         if delete_clicked:
-            if delete_income(selected_income_id, current_username):
-                st.session_state.show_edit_income_modal = False
-                st.success("Entrata eliminata con successo.")
-                st.rerun()
-            else:
-                st.error("Non sei autorizzato a eliminare questa entrata.")
+            delete_income(selected_income_id)
+            st.session_state.show_edit_income_modal = False
+            st.success("Entrata eliminata con successo.")
+            st.rerun()
 
 
-def build_rendered_income_dataset(dataframe: pd.DataFrame) -> pd.DataFrame:
-    if dataframe.empty:
-        return dataframe.copy()
-
-    rendered_incomes = dataframe.copy()
-    search_query = str(st.session_state.get("income_search_query", "") or "").strip().lower()
-    if search_query:
-        rendered_incomes = rendered_incomes[
-            rendered_incomes["source"].fillna("").astype(str).str.lower().str.contains(search_query, na=False)
-        ].copy()
-
-    sort_mode = st.session_state.get("income_sort_mode", "Data piu recente")
-    if rendered_incomes.empty:
-        return rendered_incomes
-
-    if sort_mode == "Importo maggiore":
-        return rendered_incomes.sort_values(["amount", "income_date", "id"], ascending=[False, False, False]).copy()
-    if sort_mode == "Importo minore":
-        return rendered_incomes.sort_values(["amount", "income_date", "id"], ascending=[True, False, False]).copy()
-    return rendered_incomes.sort_values(["income_date", "id"], ascending=[False, False]).copy()
-
-
-def render_incomes_section(dataframe: pd.DataFrame, selected_month: str | None = None) -> None:
+def render_incomes_section(dataframe: pd.DataFrame) -> None:
     if dataframe.empty:
         st.info("Nessuna entrata trovata per il periodo selezionato.")
         return
 
-    sorted_frame = build_rendered_income_dataset(dataframe)
-    if sorted_frame.empty:
-        if str(st.session_state.get("income_search_query", "") or "").strip():
+    search_query = str(st.session_state.get("income_search_query", "") or "").strip().lower()
+    if search_query:
+        dataframe = dataframe[
+            dataframe["source"].fillna("").astype(str).str.lower().str.contains(search_query, na=False)
+        ].copy()
+        if dataframe.empty:
             st.info("Nessuna entrata trovata con questa ricerca.")
-        else:
-            st.info("Nessuna entrata trovata per il periodo selezionato.")
-        return
+            return
+
+    sort_mode = st.session_state.get("income_sort_mode", "Data piu recente")
+    if sort_mode == "Importo maggiore":
+        sorted_frame = dataframe.sort_values(["amount", "income_date", "id"], ascending=[False, False, False]).copy()
+    elif sort_mode == "Importo minore":
+        sorted_frame = dataframe.sort_values(["amount", "income_date", "id"], ascending=[True, False, False]).copy()
+    else:
+        sorted_frame = dataframe.sort_values(["income_date", "id"], ascending=[False, False]).copy()
 
     total_amount = float(sorted_frame["amount"].sum())
     latest_date = sorted_frame.iloc[0]["income_date"].strftime("%d/%m")
@@ -5854,43 +3364,62 @@ def render_incomes_section(dataframe: pd.DataFrame, selected_month: str | None =
         sorted_frame.groupby("source", dropna=False)["amount"].sum().sort_values(ascending=False).index[0]
         if not sorted_frame.empty else "-"
     )
-    edit_mode = st.session_state.get("income_edit_mode", False)
 
-    def render_income_feed_block() -> None:
-        st.markdown('<div class="income-list">', unsafe_allow_html=True)
-        for _, row in sorted_frame.iterrows():
-            description = str(row.get("description") or "").strip()
-            date_label = row["income_date"].strftime("%d/%m")
-            with st.container(key=f"income_row_{int(row['id'])}"):
-                row_cols = st.columns([0.16, 0.28, 0.38, 0.18], vertical_alignment="center")
-                with row_cols[0]:
-                    st.markdown(f'<div class="income-cell income-cell-secondary">{date_label}</div>', unsafe_allow_html=True)
-                with row_cols[1]:
-                    if edit_mode:
-                        if st.button(str(row["source"]), key=f"income_name_pick_{int(row['id'])}", use_container_width=True, type="tertiary"):
-                            st.session_state.preselected_income_id = int(row["id"])
-                            st.session_state.show_edit_income_modal = True
-                            st.rerun()
-                    else:
-                        st.markdown(f'<div class="income-cell income-cell-source">{row["source"]}</div>', unsafe_allow_html=True)
-                with row_cols[2]:
-                    st.markdown(f'<div class="income-cell income-cell-secondary">{description or "Entrata"}</div>', unsafe_allow_html=True)
-                with row_cols[3]:
-                    st.markdown(f'<div class="income-cell income-cell-amount">{format_currency(float(row["amount"]))}</div>', unsafe_allow_html=True)
-                st.markdown('<div class="income-card"></div>', unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    render_income_section_layout(
-        month_label=selected_month,
-        render_main_block=lambda: render_income_header_block(str(top_source), latest_date),
-        render_lower_block=lambda: render_income_lower_layout(
-            render_tools_block=render_income_tools,
-            render_total_block=lambda: render_total_sticky_amount(total_amount),
-            render_feed_block=render_income_feed_block,
-            edit_mode=edit_mode,
-        ),
-        edit_mode=edit_mode,
+    st.markdown(
+        f"""
+        <div class="income-header">
+            <div class="income-meta">
+                <span>Fonte principale <strong>{top_source}</strong></span>
+                <span>Ultima entrata <strong>{latest_date}</strong></span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
+
+    st.markdown(
+        f"""
+        <div class="expense-total-sticky">
+            <div class="expense-total-pill">
+                <span class="expense-total-label">Totale</span>
+                <span class="expense-total-value">{format_currency(total_amount)}</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    render_income_tools()
+
+    edit_mode = st.session_state.get("income_edit_mode", False)
+    if edit_mode:
+        st.markdown('<div class="income-edit-backdrop"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="income-edit-focus">', unsafe_allow_html=True)
+
+    st.markdown('<div class="income-list">', unsafe_allow_html=True)
+    for _, row in sorted_frame.iterrows():
+        description = str(row.get("description") or "").strip()
+        date_label = row["income_date"].strftime("%d/%m")
+        with st.container(key=f"income_row_{int(row['id'])}"):
+            row_cols = st.columns([0.16, 0.28, 0.38, 0.18], vertical_alignment="center")
+            with row_cols[0]:
+                st.markdown(f'<div class="income-cell income-cell-secondary">{date_label}</div>', unsafe_allow_html=True)
+            with row_cols[1]:
+                if edit_mode:
+                    if st.button(str(row["source"]), key=f"income_name_pick_{int(row['id'])}", use_container_width=True, type="tertiary"):
+                        st.session_state.preselected_income_id = int(row["id"])
+                        st.session_state.show_edit_income_modal = True
+                        st.rerun()
+                else:
+                    st.markdown(f'<div class="income-cell income-cell-source">{row["source"]}</div>', unsafe_allow_html=True)
+            with row_cols[2]:
+                st.markdown(f'<div class="income-cell income-cell-secondary">{description or "Entrata"}</div>', unsafe_allow_html=True)
+            with row_cols[3]:
+                st.markdown(f'<div class="income-cell income-cell-amount">{format_currency(float(row["amount"]))}</div>', unsafe_allow_html=True)
+            st.markdown('<div class="income-card"></div>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+    if edit_mode:
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_income_expense_analysis(all_incomes: pd.DataFrame, all_expenses: pd.DataFrame) -> None:
@@ -5997,7 +3526,7 @@ def render_dashboard_detail_page(all_expenses: pd.DataFrame, all_incomes: pd.Dat
     else:
         if detail_type == "income":
             render_incomes_section(detail_frame)
-        else:
+        else:   
             render_expense_list(detail_frame)
     close_section()
 
@@ -6064,7 +3593,6 @@ def render_category_detail_page(filtered_expenses: pd.DataFrame) -> None:
     if not selected_category:
         st.session_state.current_view = "home"
         st.session_state.current_section = "Uscite"
-        st.session_state.pending_section_navigation_sync = True
         st.rerun()
 
     category_expenses = filtered_expenses[filtered_expenses["category"] == selected_category].copy()
@@ -6091,7 +3619,6 @@ def render_category_detail_page(filtered_expenses: pd.DataFrame) -> None:
     if back_clicked:
         st.session_state.current_view = "home"
         st.session_state.current_section = "Uscite"
-        st.session_state.pending_section_navigation_sync = True
         st.rerun()
     info_col.caption("La sidebar continua a controllare mese, persona e tipo spesa.")
 
@@ -6143,7 +3670,11 @@ def build_expense_option_label(row: pd.Series) -> str:
 
 
 def build_balance_label(balance: float) -> str:
-    return build_couple_balance_label(balance)
+    if balance > 0:
+        return f"L'altra persona deve {format_currency(balance)}"
+    if balance < 0:
+        return f"Io devo {format_currency(abs(balance))}"
+    return "In pari"
 
 
 def open_section(title: str, subtitle: str) -> None:
