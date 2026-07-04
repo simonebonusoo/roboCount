@@ -5,8 +5,8 @@ import { api } from "../lib/api";
 import { StatusView } from "../components/StatusView";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useThemePreference } from "../hooks/useThemePreference";
-import loginRobot from "../assets/login-robot.png";
-import signupRobot from "../assets/signup-robot.png";
+import loginRobot from "../assets/login-robot-optimized.png";
+import signupRobot from "../assets/signup-robot-optimized.png";
 import { DEFAULT_AVATAR_ID, ROBOT_AVATARS, getRobotAvatar } from "../utils/avatars";
 
 const ONBOARDING_STEPS = [
