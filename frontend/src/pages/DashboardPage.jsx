@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../lib/api";
+import { api, subscribeAppDataChanged } from "../lib/api";
 import { StatusView } from "../components/StatusView";
 
 export function DashboardPage() {
@@ -7,6 +7,7 @@ export function DashboardPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
   const [selectedMonth, setSelectedMonth] = useState("Tutti");
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let isMounted = true;
@@ -36,7 +37,9 @@ export function DashboardPage() {
     return () => {
       isMounted = false;
     };
-  }, [selectedMonth]);
+  }, [selectedMonth, reloadKey]);
+
+  useEffect(() => subscribeAppDataChanged(() => setReloadKey((current) => current + 1)), []);
 
   if (isLoading) {
     return <StatusView title="Dashboard" message="Sto caricando i dati principali." />;
