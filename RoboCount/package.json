@@ -1,0 +1,32 @@
+{
+  "name": "robocount",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:frontend": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "typecheck": "node --eval \"console.log('No TypeScript sources present in RoboCount; skipping typecheck.')\""
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.101.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.1",
+    "recharts": "^3.8.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.31.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "eslint": "^9.31.0",
+    "eslint-plugin-react": "^7.37.5",
+    "globals": "^16.3.0",
+    "vite": "^5.4.21"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

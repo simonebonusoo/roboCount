@@ -10,6 +10,8 @@ __pycache__/
 .venv/
 
 # Dati e segreti locali
+.env
+RoboCount/.env
 data/spese.db
 .streamlit/secrets.toml
 
