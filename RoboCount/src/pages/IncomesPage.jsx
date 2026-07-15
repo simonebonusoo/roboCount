@@ -3,7 +3,6 @@ import { useSearchParams } from "react-router-dom";
 import { Dialog } from "../components/Dialog";
 import { FeedbackBanner } from "../components/FeedbackBanner";
 import { MonthNavigation } from "../components/MonthNavigation";
-import { StatusView } from "../components/StatusView";
 import { AmountInput, DateChoice } from "../components/TransactionFormControls";
 import { api, notifyAppDataChanged } from "../lib/api";
 
@@ -85,15 +84,37 @@ export function IncomesPage() {
   }, [filters]);
 
   if (isLoading) {
-    return <StatusView title="Entrate" message="Sto caricando le entrate dal backend." />;
+    return (
+      <section className="page income-workspace">
+        <section className="section-local-skeleton" aria-label="Caricamento entrate">
+          <span />
+          <span />
+          <span />
+        </section>
+      </section>
+    );
   }
 
   if (error) {
-    return <StatusView title="Errore entrate" message={error} />;
+    return (
+      <section className="page income-workspace">
+        <section className="inline-error-card">
+          <h1>Entrate</h1>
+          <p>{error}</p>
+        </section>
+      </section>
+    );
   }
 
   if (!data) {
-    return <StatusView title="Entrate" message="Nessun dato disponibile." />;
+    return (
+      <section className="page income-workspace">
+        <section className="inline-error-card">
+          <h1>Entrate</h1>
+          <p>Nessun dato disponibile.</p>
+        </section>
+      </section>
+    );
   }
 
   return (

@@ -8,7 +8,6 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { StatusView } from "../components/StatusView";
 import { useAuth } from "../context/AuthContext";
 import { useFinancialHistoryQuery } from "../hooks/useAppData";
 
@@ -33,11 +32,26 @@ export function SavingsPage() {
   const summary = useMemo(() => buildSavingsSummary(monthlySavings), [monthlySavings]);
 
   if (isLoading && !monthlySavings.length) {
-    return <StatusView title="Risparmi" message="Sto calcolando i risparmi mensili." />;
+    return (
+      <section className="page savings-page">
+        <section className="section-local-skeleton" aria-label="Caricamento risparmi">
+          <span />
+          <span />
+          <span />
+        </section>
+      </section>
+    );
   }
 
   if (error) {
-    return <StatusView title="Errore risparmi" message={error.message || "Impossibile caricare i risparmi."} />;
+    return (
+      <section className="page savings-page">
+        <section className="inline-error-card">
+          <h1>Risparmi</h1>
+          <p>{error.message || "Impossibile caricare i risparmi."}</p>
+        </section>
+      </section>
+    );
   }
 
   return (

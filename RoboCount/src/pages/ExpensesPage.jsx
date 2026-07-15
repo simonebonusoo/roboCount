@@ -3,7 +3,6 @@ import { useSearchParams } from "react-router-dom";
 import { Dialog } from "../components/Dialog";
 import { FeedbackBanner } from "../components/FeedbackBanner";
 import { MonthNavigation } from "../components/MonthNavigation";
-import { StatusView } from "../components/StatusView";
 import { DateChoice } from "../components/TransactionFormControls";
 import { useAuth } from "../context/AuthContext";
 import { api, notifyAppDataChanged } from "../lib/api";
@@ -216,15 +215,37 @@ export function ExpensesPage() {
   }, [filters]);
 
   if (isLoading) {
-    return <StatusView title="Spese" message="Sto caricando le spese dal backend." />;
+    return (
+      <section className="page expense-workspace">
+        <section className="section-local-skeleton" aria-label="Caricamento uscite">
+          <span />
+          <span />
+          <span />
+        </section>
+      </section>
+    );
   }
 
   if (error) {
-    return <StatusView title="Errore spese" message={error} />;
+    return (
+      <section className="page expense-workspace">
+        <section className="inline-error-card">
+          <h1>Uscite</h1>
+          <p>{error}</p>
+        </section>
+      </section>
+    );
   }
 
   if (!data) {
-    return <StatusView title="Spese" message="Nessun dato disponibile." />;
+    return (
+      <section className="page expense-workspace">
+        <section className="inline-error-card">
+          <h1>Uscite</h1>
+          <p>Nessun dato disponibile.</p>
+        </section>
+      </section>
+    );
   }
 
   const totalExpenses = Number(data.summary?.total_amount || 0);

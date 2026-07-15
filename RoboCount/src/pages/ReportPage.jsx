@@ -15,7 +15,6 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { StatusView } from "../components/StatusView";
 import { useAuth } from "../context/AuthContext";
 import { useFinancialHistoryQuery } from "../hooks/useAppData";
 
@@ -62,11 +61,26 @@ export function ReportPage() {
   const insight = useMemo(() => buildReportInsight(reportData.monthly), [reportData]);
 
   if (isLoading && !expenses.length && !incomes.length) {
-    return <StatusView title="Report" message="Sto preparando gli analytics avanzati." />;
+    return (
+      <section className="page report-page">
+        <section className="section-local-skeleton" aria-label="Caricamento report">
+          <span />
+          <span />
+          <span />
+        </section>
+      </section>
+    );
   }
 
   if (error) {
-    return <StatusView title="Errore report" message={error.message || "Impossibile caricare i report."} />;
+    return (
+      <section className="page report-page">
+        <section className="inline-error-card">
+          <h1>Report</h1>
+          <p>{error.message || "Impossibile caricare i report."}</p>
+        </section>
+      </section>
+    );
   }
 
   const hasData = reportData.monthly.some((item) => item.incomes || item.expenses);

@@ -2,12 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, notifyAppDataChanged } from "../lib/api";
 import { Dialog } from "../components/Dialog";
-import { StatusView } from "../components/StatusView";
 import { MonthNavigation } from "../components/MonthNavigation";
 import { UltimiMovimentiCard } from "../components/UltimiMovimentiCard";
 import { useAuth } from "../context/AuthContext";
 import { useDashboardSummaryQuery } from "../hooks/useAppData";
 import { getRobotAvatar } from "../utils/avatars";
+import loginRobot from "../assets/login-robot-optimized.png";
+import signupRobot from "../assets/signup-robot-optimized.png";
 import {
   ExpenseForm,
   buildExpensePayload,
@@ -30,7 +31,7 @@ export function HomePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { user, logout } = useAuth();
   const requestedMonth = searchParams.get("month_label") || "";
-  const [selectedMonth, setSelectedMonth] = useState(requestedMonth);
+  const [selectedMonth, setSelectedMonth] = useState(requestedMonth || getCurrentMonthLabel());
   const [scope] = useState("Mensile");
   const [expenseMeta, setExpenseMeta] = useState(null);
   const [selectedCoupleMember, setSelectedCoupleMember] = useState("");
@@ -285,16 +286,15 @@ export function HomePage() {
   const isPageBootstrapping = isSummaryLoading && !dashboardData && !hasHistoricalData;
   const isBackgroundRefreshing = isSummaryFetching && Boolean(dashboardData || hasHistoricalData);
 
-  if (isPageBootstrapping) {
-    return <StatusView title="Home" message="Sto ricostruendo la panoramica principale." />;
-  }
-
   if (error && !dashboardData && !hasHistoricalData) {
-    return <StatusView title="Errore home" message={error} />;
-  }
-
-  if (!selectedMonth || (!dashboardData && !hasHistoricalData)) {
-    return <StatusView title="Home" message="Nessun dato disponibile per la home." />;
+    return (
+      <section className="page home-page">
+        <section className="inline-error-card">
+          <h1>Home</h1>
+          <p>{error}</p>
+        </section>
+      </section>
+    );
   }
 
   return (
@@ -310,6 +310,35 @@ export function HomePage() {
           onNext={() => shiftSelectedMonth(1)}
         />
       </header>
+
+      <section className={`home-robot-hero ${homeSummary.coupleBalance > 0 ? "is-credit" : homeSummary.coupleBalance < 0 ? "is-debit" : "is-even"}`}>
+        <button
+          type="button"
+          className="home-robot-avatar"
+          onClick={() => setSelectedCoupleMember(user?.username || "")}
+          aria-label="Apri anteprima profilo"
+        >
+          <img src={getRobotAvatar(user?.avatar_id || user?.avatarId).src} alt="" loading="eager" />
+        </button>
+        <div className="home-robot-copy">
+          <span>{balanceView.label}</span>
+          <h2>{balanceView.amount}</h2>
+          <p>{balanceView.description}</p>
+          <div>
+            <button type="button" className="primary-button" onClick={() => navigate(handleMetricNavigation("balance"))}>
+              Vedi saldo
+            </button>
+            <button type="button" className="secondary-button" onClick={() => navigate(`${buildExpenseUrl()}&action=new`)}>
+              Nuova spesa
+            </button>
+          </div>
+        </div>
+        <div className="home-robot-illustrations" aria-hidden="true">
+          <img src={loginRobot} alt="" loading="lazy" />
+          <img src={signupRobot} alt="" loading="lazy" />
+        </div>
+        {isPageBootstrapping ? <span className="home-robot-refresh" aria-label="Dati in aggiornamento" /> : null}
+      </section>
 
       <section className="home-quick-actions" aria-label="Azioni rapide">
         <HomeQuickAction icon="expense" label="Nuova spesa" onClick={() => navigate(`${buildExpenseUrl()}&action=new`)} />

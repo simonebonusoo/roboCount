@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, notifyAppDataChanged, subscribeAppDataChanged } from "../lib/api";
-import { StatusView } from "../components/StatusView";
 import { useAuth } from "../context/AuthContext";
 import { MonthNavigation } from "../components/MonthNavigation";
 import { getRobotAvatar } from "../utils/avatars";
@@ -82,15 +81,37 @@ export function CoupleBalancePage() {
     [memberProfiles, partnerName],
   );
   if (isLoading && !data) {
-    return <StatusView title="Saldo di coppia" message="Sto caricando le spese condivise del periodo." />;
+    return (
+      <section className="page couple-balance-workspace">
+        <section className="section-local-skeleton" aria-label="Caricamento saldo di coppia">
+          <span />
+          <span />
+          <span />
+        </section>
+      </section>
+    );
   }
 
   if (error && !data) {
-    return <StatusView title="Errore saldo di coppia" message={error} />;
+    return (
+      <section className="page couple-balance-workspace">
+        <section className="inline-error-card">
+          <h1>Saldo di coppia</h1>
+          <p>{error}</p>
+        </section>
+      </section>
+    );
   }
 
   if (!data) {
-    return <StatusView title="Saldo di coppia" message="Nessun dato disponibile." />;
+    return (
+      <section className="page couple-balance-workspace">
+        <section className="inline-error-card">
+          <h1>Saldo di coppia</h1>
+          <p>Nessun dato disponibile.</p>
+        </section>
+      </section>
+    );
   }
 
   return (

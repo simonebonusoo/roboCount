@@ -1,24 +1,65 @@
 import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { FeedbackBanner } from "../components/FeedbackBanner";
-import { StatusView } from "../components/StatusView";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../lib/api";
+import { queryClient } from "../lib/queryClient";
 import { ROBOT_AVATARS, getRobotAvatar } from "../utils/avatars";
 
+const PROFILE_STALE_TIME_MS = 10 * 60 * 1000;
+
+async function fetchProfileWorkspace(monthLabel) {
+  const [profileResponse, expensesResponse, incomesResponse, metaResponse, monthCategoriesResponse] = await Promise.all([
+    api.get("/api/profile"),
+    api.get("/api/expenses?month_label=Tutti"),
+    api.get("/api/incomes?month_label=Tutti"),
+    api.get("/api/meta/options"),
+    api.get(`/api/categories?month_label=${encodeURIComponent(monthLabel)}`).catch(() => ({ category_items: [], items: [] })),
+  ]);
+  const categoriesResponse = await api.get(`/api/profile/categories?month_label=${encodeURIComponent(monthLabel)}`).catch(() => ({ defaults: [], monthly: [] }));
+  const profileUser = profileResponse.user || {};
+  const expenses = expensesResponse.items || [];
+  const incomes = incomesResponse.items || [];
+  const totalExpenses = expenses.reduce((sum, item) => sum + Number(item.user_share ?? item.amount ?? 0), 0);
+  const totalIncomes = incomes.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const monthCount = new Set([
+    ...expenses.map((item) => item.month_label).filter(Boolean),
+    ...incomes.map((item) => item.month_label).filter(Boolean),
+  ]).size || 1;
+  const partner = (metaResponse.couple_members || []).find((item) => item.username && item.username !== profileUser.username);
+
+  return {
+    user: profileUser,
+    expenses,
+    incomes,
+    partnerName: partner?.username || "",
+    profileDefaultItems: mapCategoryList(
+      categoriesResponse.userDefaultCategories || categoriesResponse.defaults || [],
+      "user_default",
+    ),
+    monthlyCategories: categoriesResponse.monthlyCustomCategories || categoriesResponse.monthly || [],
+    monthCategoryItems: monthCategoriesResponse.category_items || monthCategoriesResponse.items || [],
+    stats: {
+      savings: totalIncomes - totalExpenses,
+      memberSince: "Account attivo",
+      monthlyAverage: (totalIncomes - totalExpenses) / monthCount,
+    },
+  };
+}
+
 export function ProfilePage() {
-  const { clearAuthState, logout, refreshUser } = useAuth();
+  const { clearAuthState, logout, refreshUser, user } = useAuth();
   const navigate = useNavigate();
   const [form, setForm] = useState({
-    full_name: "",
-    username: "",
-    email: "",
+    full_name: user?.full_name || "",
+    username: user?.username || "",
+    email: user?.email || "",
     new_password: "",
-    avatar_id: "1",
+    avatar_id: user?.avatar_id || "1",
   });
   const [partnerName, setPartnerName] = useState("");
   const [stats, setStats] = useState({ savings: 0, memberSince: "Attivo", monthlyAverage: 0 });
-  const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
@@ -36,95 +77,69 @@ export function ProfilePage() {
   const [categoryMessage, setCategoryMessage] = useState("");
   const [categoryPicker, setCategoryPicker] = useState(null);
   const [categoryOverrides, setCategoryOverrides] = useState(loadCategoryOverrides);
+  const {
+    data: profileWorkspace,
+    error: profileError,
+  } = useQuery({
+    queryKey: ["profile-workspace", selectedCategoryMonth],
+    queryFn: () => fetchProfileWorkspace(selectedCategoryMonth),
+    staleTime: PROFILE_STALE_TIME_MS,
+    gcTime: 30 * 60 * 1000,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
+  });
 
   const avatar = getRobotAvatar(form.avatar_id);
   const validationMessage = useMemo(() => validateProfileForm(form), [form]);
   const canSubmit = !validationMessage && !isSaving;
 
   useEffect(() => {
-    let isMounted = true;
-
-    async function loadProfile() {
-      setIsLoading(true);
-      setError("");
-
-      try {
-        const [profileResponse, expensesResponse, incomesResponse, metaResponse, monthCategoriesResponse] = await Promise.all([
-          api.get("/api/profile"),
-          api.get("/api/expenses?month_label=Tutti"),
-          api.get("/api/incomes?month_label=Tutti"),
-          api.get("/api/meta/options"),
-          api.get(`/api/categories?month_label=${encodeURIComponent(selectedCategoryMonth)}`).catch(() => ({ category_items: [], items: [] })),
-        ]);
-        const categoriesResponse = await api.get(`/api/profile/categories?month_label=${encodeURIComponent(selectedCategoryMonth)}`).catch(() => ({ defaults: [], monthly: [] }));
-
-        if (!isMounted) return;
-
-        const user = profileResponse.user || {};
-        const avatarId = user.avatar_id || "1";
-        setForm({
-          full_name: user.full_name || "",
-          username: user.username || "",
-          email: user.email || "",
-          new_password: "",
-          avatar_id: avatarId,
-        });
-        setInitialUsername(user.username || "");
-        setInitialAvatarId(avatarId);
-
-        const expenses = expensesResponse.items || [];
-        const incomes = incomesResponse.items || [];
-        const totalExpenses = expenses.reduce((sum, item) => sum + Number(item.user_share ?? item.amount ?? 0), 0);
-        const totalIncomes = incomes.reduce((sum, item) => sum + Number(item.amount || 0), 0);
-        const monthCount = new Set([
-          ...expenses.map((item) => item.month_label).filter(Boolean),
-          ...incomes.map((item) => item.month_label).filter(Boolean),
-        ]).size || 1;
-        setStats({
-          savings: totalIncomes - totalExpenses,
-          memberSince: "Account attivo",
-          monthlyAverage: (totalIncomes - totalExpenses) / monthCount,
-        });
-
-        const partner = (metaResponse.couple_members || []).find((item) => item.username && item.username !== user.username);
-        setPartnerName(partner?.username || "");
-        const profileDefaultItems = mapCategoryList(
-          categoriesResponse.userDefaultCategories || categoriesResponse.defaults || [],
-          "user_default",
-        );
-        const defaultCategoriesForView = buildDefaultCategoriesForView(profileDefaultItems, expenses, selectedCategoryMonth);
-        setDefaultCategories(applyCategoryOverrides(defaultCategoriesForView, categoryOverrides, selectedCategoryMonth));
-        setMonthlyCategories(
-          applyCategoryOverrides(
-            buildMonthlyCategoriesForView({
-              expenses,
-              monthLabel: selectedCategoryMonth,
-              defaultCategories: defaultCategoriesForView,
-              profileDefaultCategories: profileDefaultItems,
-              monthlyCategories: categoriesResponse.monthlyCustomCategories || categoriesResponse.monthly || [],
-              monthCategoryItems: monthCategoriesResponse.category_items || monthCategoriesResponse.items || [],
-            }),
-            categoryOverrides,
-            selectedCategoryMonth,
-          ),
-        );
-      } catch (requestError) {
-        if (isMounted) {
-          setError(requestError.message || "Impossibile caricare il profilo.");
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
+    if (!profileWorkspace) {
+      if (profileError) {
+        setError(profileError.message || "Impossibile caricare il profilo.");
       }
+      return;
     }
 
-    loadProfile();
+    const profileUser = profileWorkspace.user || {};
+    const avatarId = profileUser.avatar_id || "1";
+    setForm((current) => ({
+      full_name: profileUser.full_name || "",
+      username: profileUser.username || "",
+      email: profileUser.email || "",
+      new_password: current.new_password || "",
+      avatar_id: current.avatar_id && current.avatar_id !== initialAvatarId ? current.avatar_id : avatarId,
+    }));
+    setInitialUsername(profileUser.username || "");
+    setInitialAvatarId(avatarId);
+    setStats(profileWorkspace.stats);
+    setPartnerName(profileWorkspace.partnerName || "");
+    setError("");
+  }, [profileWorkspace, profileError]);
 
-    return () => {
-      isMounted = false;
-    };
-  }, [selectedCategoryMonth, categoryOverrides]);
+  useEffect(() => {
+    if (!profileWorkspace) {
+      return;
+    }
+    const defaultCategoriesForView = buildDefaultCategoriesForView(profileWorkspace.profileDefaultItems, profileWorkspace.expenses, selectedCategoryMonth);
+    setDefaultCategories(applyCategoryOverrides(defaultCategoriesForView, categoryOverrides, selectedCategoryMonth));
+    setMonthlyCategories(
+      applyCategoryOverrides(
+        buildMonthlyCategoriesForView({
+          expenses: profileWorkspace.expenses,
+          monthLabel: selectedCategoryMonth,
+          defaultCategories: defaultCategoriesForView,
+          profileDefaultCategories: profileWorkspace.profileDefaultItems,
+          monthlyCategories: profileWorkspace.monthlyCategories,
+          monthCategoryItems: profileWorkspace.monthCategoryItems,
+        }),
+        categoryOverrides,
+        selectedCategoryMonth,
+      ),
+    );
+  }, [categoryOverrides, profileWorkspace, selectedCategoryMonth]);
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -159,6 +174,7 @@ export function ProfilePage() {
       }
 
       const refreshedUser = await refreshUser();
+      await queryClient.invalidateQueries({ queryKey: ["profile-workspace"] });
       const nextAvatarId = refreshedUser.avatar_id || form.avatar_id;
       setForm({
         full_name: profileResponse.user.full_name || refreshedUser.full_name || "",
@@ -323,14 +339,6 @@ export function ProfilePage() {
     return [...defaultCategories, ...monthlyCategories]
       .map((item) => normalizeCategory(item, item.scope))
       .filter((item) => item.id !== category.id);
-  }
-
-  if (isLoading) {
-    return <StatusView title="Profilo" message="Sto caricando il profilo utente." />;
-  }
-
-  if (error && !form.username) {
-    return <StatusView title="Errore profilo" message={error} />;
   }
 
   return (

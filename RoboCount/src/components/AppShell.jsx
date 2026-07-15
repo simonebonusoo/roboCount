@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Dialog } from "./Dialog";
 import { useAuth } from "../context/AuthContext";
 import { ThemeToggle } from "./ThemeToggle";
 import { useThemePreference } from "../hooks/useThemePreference";
 import { api, notifyAppDataChanged } from "../lib/api";
+import { queryClient } from "../lib/queryClient";
 import { useMetaOptionsQuery } from "../hooks/useAppData";
 import { getRobotAvatar } from "../utils/avatars";
 import {
@@ -18,11 +19,13 @@ import { IncomeForm, buildIncomePayload, createDefaultIncomeForm, validateIncome
 
 const navigation = [
   { to: "/home", label: "Home", icon: HomeIcon },
+  { to: "/expenses", label: "Uscite", icon: ExpenseIcon },
+  { to: "/incomes", label: "Entrate", icon: IncomeIcon },
+  { to: "/risparmi", label: "Risparmi", icon: SavingsIcon },
+  { to: "/report", label: "Report", icon: ReportIcon },
   { to: "/calendar", label: "Calendario", icon: CalendarIcon },
   { to: "/couple-balance", label: "Saldo di coppia", icon: CoupleIcon },
-  { to: "/incomes", label: "Entrate", icon: IncomeIcon },
-  { to: "/expenses", label: "Uscite", icon: ExpenseIcon },
-  { to: "/report", label: "Report", icon: ReportIcon },
+  { to: "/profile", label: "Profilo", icon: ProfileIcon },
 ];
 
 function getCategoryName(category) {
@@ -46,7 +49,10 @@ export function AppShell() {
   const [incomeFormError, setIncomeFormError] = useState("");
   const [isExpenseSubmitting, setIsExpenseSubmitting] = useState(false);
   const [isIncomeSubmitting, setIsIncomeSubmitting] = useState(false);
+  const [globalSearch, setGlobalSearch] = useState("");
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
   const profileMenuRef = useRef(null);
+  const searchInputRef = useRef(null);
   const {
     data: metaOptions,
     refetch: refetchMetaOptions,
@@ -74,6 +80,10 @@ export function AppShell() {
   const categoryOptions = expenseMeta?.category_items || expenseMeta?.categories || [];
   const splitOptions = expenseMeta?.split_options || ["equal", "custom"];
   const expenseTypeOptions = expenseMeta?.expense_types || ["Personale", "Condivisa"];
+  const globalSearchResults = useMemo(
+    () => buildGlobalSearchResults(globalSearch, visibleNavigation, user),
+    [globalSearch, visibleNavigation, user],
+  );
 
   useEffect(() => {
     function handlePointerDown(event) {
@@ -95,6 +105,12 @@ export function AppShell() {
         setIsSidebarOpen(false);
         setIsProfileMenuOpen(false);
         setIsAddChoiceOpen(false);
+        setIsSearchOpen(false);
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setIsSearchOpen(true);
+        searchInputRef.current?.focus();
       }
     }
 
@@ -110,6 +126,7 @@ export function AppShell() {
     setIsAddChoiceOpen(false);
     setIsExpenseDialogOpen(false);
     setIsIncomeDialogOpen(false);
+    setIsSearchOpen(false);
     setExpenseFormError("");
     setIncomeFormError("");
     setIsExpenseSubmitting(false);
@@ -162,23 +179,19 @@ export function AppShell() {
       return;
     }
 
-    const searchTerm = event.currentTarget.value.trim().toLowerCase();
-    if (!searchTerm) {
+    const firstResult = globalSearchResults[0];
+    if (!firstResult) {
       return;
     }
 
-    const searchableRoutes = [
-      ...visibleNavigation,
-      { to: "/profile", label: "Profilo" },
-      ...(user?.is_admin ? [{ to: "/admin/users", label: "Admin" }] : []),
-    ];
-    const match = searchableRoutes.find((item) => item.label.toLowerCase().includes(searchTerm));
-    if (!match) {
-      return;
-    }
+    event.preventDefault();
+    openSearchResult(firstResult);
+  }
 
-    event.currentTarget.value = "";
-    navigate(match.to);
+  function openSearchResult(result) {
+    setGlobalSearch("");
+    setIsSearchOpen(false);
+    navigate(result.to);
   }
 
   async function handleAddChoice(type) {
@@ -399,10 +412,35 @@ export function AppShell() {
                 </span>
               </button>
 
-              <label className="top-shell__search" aria-label="Cerca o vai a una sezione">
+              <label className={`top-shell__search${isSearchOpen ? " is-open" : ""}`} aria-label="Cerca o vai a una sezione">
                 <SearchIcon />
-                <input type="search" placeholder="Cerca o vai a..." onKeyDown={handleTopbarSearchKeyDown} />
+                <input
+                  ref={searchInputRef}
+                  type="search"
+                  placeholder="Cerca spese, entrate, categorie..."
+                  value={globalSearch}
+                  onChange={(event) => {
+                    setGlobalSearch(event.target.value);
+                    setIsSearchOpen(true);
+                  }}
+                  onFocus={() => setIsSearchOpen(true)}
+                  onKeyDown={handleTopbarSearchKeyDown}
+                />
                 <kbd>Cmd K</kbd>
+                {isSearchOpen && globalSearch.trim() ? (
+                  <div className="top-shell__search-popover" role="listbox" aria-label="Risultati ricerca globale">
+                    {globalSearchResults.length ? (
+                      globalSearchResults.map((result) => (
+                        <button key={`${result.type}-${result.id}`} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => openSearchResult(result)}>
+                          <span>{result.label}</span>
+                          <small>{result.meta}</small>
+                        </button>
+                      ))
+                    ) : (
+                      <p>Nessun risultato in cache. Apri una sezione per renderla ricercabile.</p>
+                    )}
+                  </div>
+                ) : null}
               </label>
 
               <div className="top-shell__right">
@@ -459,7 +497,9 @@ export function AppShell() {
         </header>
 
         <main className="main-content shell-main">
-          <Outlet />
+          <Suspense fallback={<InlinePageSkeleton />}>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
 
@@ -621,6 +661,25 @@ function ReportIcon() {
   );
 }
 
+function SavingsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5.5 10.5c0-3 2.6-5.5 6.5-5.5s6.5 2.5 6.5 5.5-2.6 5.5-6.5 5.5-6.5-2.5-6.5-5.5Z" />
+      <path d="M8 15.5v2.25A1.25 1.25 0 0 0 9.25 19h5.5A1.25 1.25 0 0 0 16 17.75V15.5" />
+      <path d="M12 8.25v4.5M9.75 10.5h4.5" />
+    </svg>
+  );
+}
+
+function ProfileIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 12.25a3.75 3.75 0 1 0 0-7.5 3.75 3.75 0 0 0 0 7.5Z" />
+      <path d="M5.25 19.25c1.25-2.95 3.7-4.5 6.75-4.5s5.5 1.55 6.75 4.5" />
+    </svg>
+  );
+}
+
 function AdminIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -649,4 +708,88 @@ function SearchIcon() {
 function ProfileAvatar({ user, className }) {
   const avatar = getRobotAvatar(user?.avatar_id);
   return <span className={className}><img src={avatar.src} alt="" /></span>;
+}
+
+function InlinePageSkeleton() {
+  return (
+    <section className="page inline-page-skeleton" aria-label="Caricamento sezione">
+      <div />
+      <div />
+      <div />
+    </section>
+  );
+}
+
+function buildGlobalSearchResults(searchTerm, visibleNavigation, user) {
+  const normalized = searchTerm.trim().toLowerCase();
+  if (!normalized) {
+    return [];
+  }
+
+  const routeResults = [
+    ...visibleNavigation,
+    ...(user?.is_admin ? [{ to: "/admin/users", label: "Admin" }] : []),
+  ]
+    .filter((item) => item.label.toLowerCase().includes(normalized))
+    .map((item) => ({
+      id: item.to,
+      label: item.label,
+      meta: "Sezione",
+      to: item.to,
+      type: "route",
+    }));
+
+  const cachedItems = [];
+  queryClient.getQueryCache().findAll().forEach((query) => {
+    const data = query.state.data;
+    const history = data?.history || data;
+    (history?.expenses || data?.items || []).forEach((item) => {
+      if (!item?.id || !matchesSearch(item, normalized, ["name", "description", "category", "paid_by"])) {
+        return;
+      }
+      cachedItems.push({
+        id: `expense-${item.id}`,
+        label: item.name || item.description || item.category || "Spesa",
+        meta: `Spesa · ${item.category || "Categoria"}`,
+        to: `/expenses?month_label=${encodeURIComponent(item.month_label || "Tutti")}&search=${encodeURIComponent(item.name || item.description || item.category || "")}`,
+        type: "expense",
+      });
+    });
+    (history?.incomes || []).forEach((item) => {
+      if (!item?.id || !matchesSearch(item, normalized, ["source", "description"])) {
+        return;
+      }
+      cachedItems.push({
+        id: `income-${item.id}`,
+        label: item.source || item.description || "Entrata",
+        meta: "Entrata",
+        to: `/incomes?month_label=${encodeURIComponent(item.month_label || "Tutti")}&search=${encodeURIComponent(item.source || item.description || "")}`,
+        type: "income",
+      });
+    });
+    (data?.category_items || data?.meta?.category_items || []).forEach((item) => {
+      if (!item?.name || !item.name.toLowerCase().includes(normalized)) {
+        return;
+      }
+      cachedItems.push({
+        id: `category-${item.id || item.name}`,
+        label: item.name,
+        meta: "Categoria",
+        to: `/expenses?category=${encodeURIComponent(item.name)}`,
+        type: "category",
+      });
+    });
+  });
+
+  const deduped = new Map();
+  [...routeResults, ...cachedItems].forEach((item) => {
+    if (!deduped.has(item.id)) {
+      deduped.set(item.id, item);
+    }
+  });
+  return Array.from(deduped.values()).slice(0, 8);
+}
+
+function matchesSearch(item, normalized, fields) {
+  return fields.some((field) => String(item?.[field] || "").toLowerCase().includes(normalized));
 }
