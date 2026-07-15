@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { api, notifyAppDataChanged, subscribeAppDataChanged } from "../lib/api";
+import { api, notifyAppDataChanged } from "../lib/api";
 import { Dialog } from "../components/Dialog";
 import { StatusView } from "../components/StatusView";
 import { MonthNavigation } from "../components/MonthNavigation";
 import { UltimiMovimentiCard } from "../components/UltimiMovimentiCard";
 import { useAuth } from "../context/AuthContext";
+import { useDashboardQuery, useFinancialHistoryQuery, useMetaOptionsQuery } from "../hooks/useAppData";
 import { getRobotAvatar } from "../utils/avatars";
 import {
   ExpenseForm,
@@ -27,48 +28,47 @@ import {
   YAxis,
 } from "recharts";
 
-const CHART_COLORS = {
-  primary: "var(--chart-primary)",
-  primarySoft: "var(--chart-secondary)",
-  primaryMuted: "var(--chart-tertiary)",
-  primaryPale: "var(--chart-quaternary)",
-  accent: "var(--chart-accent)",
-  neutral: "var(--chart-neutral)",
-  neutralMuted: "var(--chart-axis)",
-  neutralSoft: "var(--chart-neutral-soft)",
-  cursor: "var(--chart-cursor)",
-  barCursor: "var(--chart-bar-cursor)",
-  surfaceStroke: "var(--chart-stroke-surface)",
-};
-
 export function HomePage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user, logout } = useAuth();
-  const [selectedMonth, setSelectedMonth] = useState(searchParams.get("month_label") || "");
-  const [scope, setScope] = useState("Mensile");
-  const [dashboardData, setDashboardData] = useState(null);
-  const [allExpenses, setAllExpenses] = useState([]);
-  const [allIncomes, setAllIncomes] = useState([]);
-  const [allSharedExpenses, setAllSharedExpenses] = useState([]);
+  const requestedMonth = searchParams.get("month_label") || "";
+  const [selectedMonth, setSelectedMonth] = useState(requestedMonth);
+  const [scope] = useState("Mensile");
   const [expenseMeta, setExpenseMeta] = useState(null);
-  const [coupleMembers, setCoupleMembers] = useState([]);
-  const [coupleMemberProfiles, setCoupleMemberProfiles] = useState([]);
-  const [coupleUserCount, setCoupleUserCount] = useState(null);
   const [selectedCoupleMember, setSelectedCoupleMember] = useState("");
   const [selectedCategoryPreview, setSelectedCategoryPreview] = useState(null);
   const [editingExpenseId, setEditingExpenseId] = useState(null);
   const [expenseForm, setExpenseForm] = useState(createDefaultExpenseForm(""));
   const [expenseFormError, setExpenseFormError] = useState("");
   const [isExpenseSubmitting, setIsExpenseSubmitting] = useState(false);
-  const [inviteFeedback, setInviteFeedback] = useState("");
-  const [isLoading, setIsLoading] = useState(true);
-  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [error, setError] = useState("");
-  const [reloadKey, setReloadKey] = useState(0);
   const accountType = user?.account_type || "couple";
   const isPersonalAccount = accountType === "personal";
-  const canInvitePartner = accountType === "couple" && Number(coupleUserCount || 0) < 2;
+  const {
+    data: metaOptions,
+    error: metaError,
+    isLoading: isMetaLoading,
+    isFetching: isMetaFetching,
+  } = useMetaOptionsQuery({ enabled: Boolean(user?.username) });
+  const {
+    data: financialHistory,
+    error: historyError,
+    isLoading: isHistoryLoading,
+    isFetching: isHistoryFetching,
+  } = useFinancialHistoryQuery(accountType, { enabled: Boolean(user?.username) });
+  const allExpenses = financialHistory?.expenses || [];
+  const allIncomes = financialHistory?.incomes || [];
+  const allSharedExpenses = financialHistory?.sharedExpenses || [];
+  const coupleMembers = metaOptions?.usernames || [];
+  const coupleMemberProfiles = metaOptions?.couple_members || [];
+  const coupleUserCount = metaOptions?.couple_member_count ?? coupleMembers.length;
+  const {
+    data: dashboardData,
+    error: dashboardError,
+    isLoading: isDashboardLoading,
+    isFetching: isDashboardFetching,
+  } = useDashboardQuery(selectedMonth, { enabled: Boolean(selectedMonth) });
   const payerOptions = useMemo(() => {
     const usernames = expenseMeta?.usernames || [];
     if (!user?.username || usernames.includes(user.username)) {
@@ -88,130 +88,39 @@ export function HomePage() {
   }, [user]);
 
   useEffect(() => {
-    let isMounted = true;
-
-    async function loadMeta() {
-      try {
-        const metaResponse = await api.get("/api/meta/options");
-        if (!isMounted) {
-          return;
-        }
-        setExpenseMeta(metaResponse);
-        setCoupleMembers(metaResponse.usernames || []);
-        setCoupleMemberProfiles(metaResponse.couple_members || []);
-        setCoupleUserCount(metaResponse.couple_member_count ?? (metaResponse.usernames || []).length);
-      } catch (requestError) {
-        if (isMounted) {
-          setError(requestError.message || "Impossibile caricare la home.");
-        }
-      }
+    if (metaOptions) {
+      setExpenseMeta(metaOptions);
     }
-
-    loadMeta();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [reloadKey]);
-
-  useEffect(() => {
-    if (!selectedMonth) {
-      return;
-    }
-
-    let isMounted = true;
-
-    async function loadDashboard() {
-      setIsLoading(true);
-      setError("");
-
-      try {
-        const response = await api.get(`/api/dashboard?month_label=${encodeURIComponent(selectedMonth)}`);
-        if (!isMounted) {
-          return;
-        }
-        setDashboardData(response);
-      } catch (requestError) {
-        if (isMounted) {
-          setError(requestError.message || "Impossibile caricare la dashboard.");
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      }
-    }
-
-    loadDashboard();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [selectedMonth, reloadKey]);
-
-  useEffect(() => {
-    let isMounted = true;
-
-    async function loadHistory() {
-      setIsHistoryLoading(true);
-
-      try {
-        const [expensesResponse, incomesResponse, sharedResponse] = await Promise.all([
-          api.get("/api/expenses?month_label=Tutti"),
-          api.get("/api/incomes?month_label=Tutti"),
-          isPersonalAccount
-            ? Promise.resolve({ items: [] })
-            : api.get("/api/couple-balance?month_label=Tutti&status_filter=all"),
-        ]);
-
-        if (!isMounted) {
-          return;
-        }
-
-        setAllExpenses(expensesResponse.items || []);
-        setAllIncomes(incomesResponse.items || []);
-        setAllSharedExpenses(sharedResponse.items || []);
-
-        if (!searchParams.get("month_label")) {
-          const initialMonth = pickInitialMonth([
-            ...(expensesResponse.month_options || []),
-            ...(incomesResponse.month_options || []),
-          ]);
-          setSelectedMonth((current) => current || initialMonth);
-        }
-      } catch (requestError) {
-        if (isMounted) {
-          setError((current) => current || requestError.message || "Impossibile completare il caricamento della home.");
-        }
-      } finally {
-        if (isMounted) {
-          setIsHistoryLoading(false);
-        }
-      }
-    }
-
-    loadHistory();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [isPersonalAccount, reloadKey, searchParams]);
-
-  useEffect(() => subscribeAppDataChanged(() => setReloadKey((current) => current + 1)), []);
+  }, [metaOptions]);
 
   const monthOptions = useMemo(
-    () => normalizeMonthOptions(dashboardData?.month_options || [], allExpenses, allIncomes),
+    () => normalizeMonthOptions(
+      dashboardData?.month_options || [],
+      allExpenses,
+      allIncomes,
+      financialHistory?.expenseMonthOptions || [],
+      financialHistory?.incomeMonthOptions || [],
+    ),
     [dashboardData, allExpenses, allIncomes],
   );
 
   useEffect(() => {
-    if (!monthOptions.length) {
+    if (requestedMonth && requestedMonth !== selectedMonth) {
+      setSelectedMonth(requestedMonth);
+      return;
+    }
+    if (requestedMonth || !monthOptions.length) {
       return;
     }
     if (!selectedMonth || !monthOptions.includes(selectedMonth)) {
       setSelectedMonth(monthOptions[0]);
     }
-  }, [monthOptions, selectedMonth]);
+  }, [monthOptions, requestedMonth, selectedMonth]);
+
+  useEffect(() => {
+    const nextError = metaError?.message || dashboardError?.message || historyError?.message || "";
+    setError(nextError);
+  }, [dashboardError, historyError, metaError]);
 
   const homeSummary = useMemo(() => {
     if (!selectedMonth) {
@@ -385,15 +294,23 @@ export function HomePage() {
     setSelectedCoupleMember(requestedMember);
   }, [coupleMembers, searchParams]);
 
-  if (isLoading && !dashboardData) {
+  const hasHistoricalData = allExpenses.length > 0 || allIncomes.length > 0 || allSharedExpenses.length > 0;
+  const isPageBootstrapping = (
+    (isMetaLoading && !expenseMeta)
+    || (isHistoryLoading && !hasHistoricalData && !dashboardData)
+    || (isDashboardLoading && !dashboardData && !hasHistoricalData)
+  );
+  const isBackgroundRefreshing = isMetaFetching || isHistoryFetching || isDashboardFetching;
+
+  if (isPageBootstrapping) {
     return <StatusView title="Home" message="Sto ricostruendo la panoramica principale." />;
   }
 
-  if (error && !dashboardData) {
+  if (error && !dashboardData && !hasHistoricalData) {
     return <StatusView title="Errore home" message={error} />;
   }
 
-  if (!selectedMonth || !dashboardData) {
+  if (!selectedMonth || (!dashboardData && !hasHistoricalData)) {
     return <StatusView title="Home" message="Nessun dato disponibile per la home." />;
   }
 
@@ -574,7 +491,7 @@ export function HomePage() {
                 <span><i className="income" />Entrate</span>
                 <span><i className="expense" />Spese</span>
               </div>
-              {isHistoryLoading ? <p className="panel-inline-note">Sto completando l'analisi storica in background.</p> : null}
+              {isBackgroundRefreshing ? <p className="panel-inline-note">Aggiornamento dati in background.</p> : null}
             </section>
           </section>
         </div>
@@ -900,18 +817,6 @@ export function HomePage() {
     return buildExpenseUrl({ summary: metricKey === "net_month" ? "net" : "1" });
   }
 
-  async function handleInvitePartner() {
-    try {
-      const response = await api.post("/api/couple-invite", {});
-      const inviteUrl = `${window.location.origin}/login?mode=register&type=couple&invite_token=${encodeURIComponent(response.invite_token || "")}`;
-      await navigator.clipboard.writeText(inviteUrl);
-      setInviteFeedback("Link copiato");
-    } catch (error) {
-      setInviteFeedback(error.message || "Impossibile generare il link invito");
-    }
-    window.setTimeout(() => setInviteFeedback(""), 5000);
-  }
-
   function closeSelectedMember() {
     setSelectedCoupleMember("");
     const next = new URLSearchParams(searchParams);
@@ -1117,12 +1022,6 @@ function normalizeMonthOptions(options, expenses, incomes) {
 
   const normalized = Array.from(merged).sort((left, right) => right.localeCompare(left));
   return normalized.length ? normalized : [getCurrentMonthLabel()];
-}
-
-function pickInitialMonth(options) {
-  const normalized = Array.from(new Set(options.filter((item) => item && item !== "Tutti"))).sort((left, right) => right.localeCompare(left));
-  const currentMonth = getCurrentMonthLabel();
-  return normalized.find((item) => item === currentMonth) || normalized[0] || currentMonth;
 }
 
 function getCurrentMonthLabel() {

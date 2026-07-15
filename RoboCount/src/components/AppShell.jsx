@@ -5,6 +5,7 @@ import { useAuth } from "../context/AuthContext";
 import { ThemeToggle } from "./ThemeToggle";
 import { useThemePreference } from "../hooks/useThemePreference";
 import { api, notifyAppDataChanged } from "../lib/api";
+import { useMetaOptionsQuery } from "../hooks/useAppData";
 import { getRobotAvatar } from "../utils/avatars";
 import {
   ExpenseForm,
@@ -46,6 +47,10 @@ export function AppShell() {
   const [isExpenseSubmitting, setIsExpenseSubmitting] = useState(false);
   const [isIncomeSubmitting, setIsIncomeSubmitting] = useState(false);
   const profileMenuRef = useRef(null);
+  const {
+    data: metaOptions,
+    error: metaOptionsError,
+  } = useMetaOptionsQuery({ enabled: Boolean(user?.username) });
   const isPersonalAccount = user?.account_type === "personal";
   const visibleNavigation = isPersonalAccount
     ? navigation.filter((item) => item.to !== "/couple-balance")
@@ -118,6 +123,12 @@ export function AppShell() {
     setExpenseForm(createDefaultExpenseForm(user.username, user.account_type));
     setIncomeForm(createDefaultIncomeForm());
   }, [user]);
+
+  useEffect(() => {
+    if (metaOptions) {
+      setExpenseMeta(metaOptions);
+    }
+  }, [metaOptions]);
 
   async function handleLogout() {
     try {
@@ -208,15 +219,8 @@ export function AppShell() {
     setExpenseFormError("");
     setIsExpenseDialogOpen(true);
 
-    if (expenseMeta) {
-      return;
-    }
-
-    try {
-      const response = await api.get("/api/meta/options");
-      setExpenseMeta(response);
-    } catch (requestError) {
-      setExpenseFormError(requestError.message || "Impossibile caricare le opzioni per la nuova spesa.");
+    if (!expenseMeta && metaOptionsError) {
+      setExpenseFormError(metaOptionsError.message || "Impossibile caricare le opzioni per la nuova spesa.");
     }
   }
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import {
   Bar,
   BarChart,
@@ -10,52 +10,20 @@ import {
 } from "recharts";
 import { StatusView } from "../components/StatusView";
 import { useAuth } from "../context/AuthContext";
-import { api } from "../lib/api";
+import { useFinancialHistoryQuery } from "../hooks/useAppData";
 
 const POSITIVE_COLOR = "#63d72a";
 const NEGATIVE_COLOR = "#f59e0b";
 
 export function SavingsPage() {
   const { user } = useAuth();
-  const [expenses, setExpenses] = useState([]);
-  const [incomes, setIncomes] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let isMounted = true;
-
-    async function loadSavingsData() {
-      setIsLoading(true);
-      setError("");
-
-      try {
-        const [expensesResponse, incomesResponse] = await Promise.all([
-          api.get("/api/expenses?month_label=Tutti"),
-          api.get("/api/incomes?month_label=Tutti"),
-        ]);
-
-        if (!isMounted) return;
-
-        setExpenses(expensesResponse.items || []);
-        setIncomes(incomesResponse.items || []);
-      } catch (requestError) {
-        if (isMounted) {
-          setError(requestError.message || "Impossibile caricare i risparmi.");
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      }
-    }
-
-    loadSavingsData();
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+  const {
+    data: financialHistory,
+    error,
+    isLoading,
+  } = useFinancialHistoryQuery(user?.account_type || "couple", { enabled: Boolean(user?.username) });
+  const expenses = financialHistory?.expenses || [];
+  const incomes = financialHistory?.incomes || [];
 
   const monthlySavings = useMemo(
     () => buildMonthlySavings({ expenses, incomes, currentUsername: user?.username || "" }),
@@ -64,12 +32,12 @@ export function SavingsPage() {
 
   const summary = useMemo(() => buildSavingsSummary(monthlySavings), [monthlySavings]);
 
-  if (isLoading) {
+  if (isLoading && !monthlySavings.length) {
     return <StatusView title="Risparmi" message="Sto calcolando i risparmi mensili." />;
   }
 
   if (error) {
-    return <StatusView title="Errore risparmi" message={error} />;
+    return <StatusView title="Errore risparmi" message={error.message || "Impossibile caricare i risparmi."} />;
   }
 
   return (

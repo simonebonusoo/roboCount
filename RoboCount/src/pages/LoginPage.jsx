@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../lib/api";
@@ -39,9 +39,6 @@ export function LoginPage() {
   const [searchParams] = useSearchParams();
   const isOnboarding = step === "register" || step === "avatar" || step === "invite";
   const inviteUsername = registeredUser?.username || form.username;
-  const inviteToken = searchParams.get("invite_token") || searchParams.get("invited_by") || "";
-  const inviteUrl = useMemo(() => buildInviteUrl(inviteToken), [inviteToken]);
-
   useEffect(() => {
     if (searchParams.get("mode") !== "register") {
       return;

@@ -102,6 +102,9 @@ if [ "$NEED_PYTHON_INSTALL" -eq 1 ]; then
 fi
 
 if [ ! -f "$ENV_FILE" ]; then
+  if [ -f "$ROOT_DIR/.env.save" ]; then
+    fail "File .env mancante nella root del progetto. E presente .env.save: copialo in .env e verifica che la variabile si chiami DATABASE_URL (non PYDATABASE_URL)."
+  fi
   fail "File .env mancante nella root del progetto. Crea .env partendo da .env.example."
 fi
 

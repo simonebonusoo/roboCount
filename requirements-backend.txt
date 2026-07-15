@@ -1,8 +1,0 @@
-# Dipendenze del solo backend FastAPI (deploy su Render).
-# NIENTE streamlit: serve solo alla vecchia UI app.py, che non viene deployata.
-# Rimuoverlo rende il build molto piu veloce (streamlit trascina pyarrow ecc.).
-pandas>=2.2,<3.0
-reportlab>=4.0,<5.0
-fastapi>=0.115,<1.0
-uvicorn>=0.32,<1.0
-psycopg[binary,pool]>=3.1,<4.0

@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { api, subscribeAuthExpired } from "../lib/api";
+import { queryClient } from "../lib/queryClient";
 
 const AuthContext = createContext(null);
 
@@ -21,7 +22,7 @@ export function AuthProvider({ children }) {
         }
         setUser(response.user);
         setIsAuthenticated(true);
-      } catch (error) {
+      } catch {
         if (!isMounted || requestRevision !== authRevisionRef.current) {
           return;
         }
@@ -43,6 +44,7 @@ export function AuthProvider({ children }) {
 
   useEffect(() => subscribeAuthExpired(() => {
     authRevisionRef.current += 1;
+    queryClient.clear();
     setUser(null);
     setIsAuthenticated(false);
     setIsLoading(false);
@@ -51,11 +53,9 @@ export function AuthProvider({ children }) {
   async function login(credentials) {
     authRevisionRef.current += 1;
     const requestRevision = authRevisionRef.current;
-    setIsLoading(true);
 
     try {
-      await api.post("/api/auth/login", credentials);
-      const response = await api.get("/api/auth/me");
+      const response = await api.post("/api/auth/login", credentials);
       if (requestRevision !== authRevisionRef.current) {
         return response.user;
       }
@@ -68,21 +68,15 @@ export function AuthProvider({ children }) {
         setIsAuthenticated(false);
       }
       throw error;
-    } finally {
-      if (requestRevision === authRevisionRef.current) {
-        setIsLoading(false);
-      }
     }
   }
 
   async function register(payload) {
     authRevisionRef.current += 1;
     const requestRevision = authRevisionRef.current;
-    setIsLoading(true);
 
     try {
-      await api.post("/api/auth/register", payload);
-      const response = await api.get("/api/auth/me");
+      const response = await api.post("/api/auth/register", payload);
       if (requestRevision !== authRevisionRef.current) {
         return response.user;
       }
@@ -95,22 +89,18 @@ export function AuthProvider({ children }) {
         setIsAuthenticated(false);
       }
       throw error;
-    } finally {
-      if (requestRevision === authRevisionRef.current) {
-        setIsLoading(false);
-      }
     }
   }
 
   async function logout() {
     authRevisionRef.current += 1;
     const requestRevision = authRevisionRef.current;
-    setIsLoading(true);
 
     try {
       await api.post("/api/auth/logout", {});
     } finally {
       if (requestRevision === authRevisionRef.current) {
+        queryClient.clear();
         setUser(null);
         setIsAuthenticated(false);
         setIsLoading(false);
@@ -120,6 +110,7 @@ export function AuthProvider({ children }) {
 
   function clearAuthState() {
     authRevisionRef.current += 1;
+    queryClient.clear();
     setUser(null);
     setIsAuthenticated(false);
     setIsLoading(false);

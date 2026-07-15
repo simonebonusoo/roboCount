@@ -17,10 +17,9 @@ import {
 } from "recharts";
 import { StatusView } from "../components/StatusView";
 import { useAuth } from "../context/AuthContext";
-import { api } from "../lib/api";
+import { useFinancialHistoryQuery } from "../hooks/useAppData";
 
 const GREEN = "#63d72a";
-const INCOME_GREEN = "#22c55e";
 const EXPENSE_ORANGE = "#f59e0b";
 const NEGATIVE_RED = "#ef4444";
 const CATEGORY_COLORS = {
@@ -34,49 +33,15 @@ const MONTHS = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11"
 
 export function ReportPage() {
   const { user } = useAuth();
-  const [expenses, setExpenses] = useState([]);
-  const [incomes, setIncomes] = useState([]);
   const [period, setPeriod] = useState("Mensile");
   const [selectedYear, setSelectedYear] = useState(String(new Date().getFullYear()));
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let isMounted = true;
-
-    async function loadReportData() {
-      setIsLoading(true);
-      setError("");
-
-      try {
-        const [expensesResponse, incomesResponse] = await Promise.all([
-          api.get("/api/expenses?month_label=Tutti"),
-          api.get("/api/incomes?month_label=Tutti"),
-        ]);
-
-        if (!isMounted) {
-          return;
-        }
-
-        setExpenses(expensesResponse.items || []);
-        setIncomes(incomesResponse.items || []);
-      } catch (requestError) {
-        if (isMounted) {
-          setError(requestError.message || "Impossibile caricare i report.");
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      }
-    }
-
-    loadReportData();
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+  const {
+    data: financialHistory,
+    error,
+    isLoading,
+  } = useFinancialHistoryQuery(user?.account_type || "couple", { enabled: Boolean(user?.username) });
+  const expenses = financialHistory?.expenses || [];
+  const incomes = financialHistory?.incomes || [];
 
   const yearOptions = useMemo(() => buildYearOptions(expenses, incomes), [expenses, incomes]);
 
@@ -96,12 +61,12 @@ export function ReportPage() {
   );
   const insight = useMemo(() => buildReportInsight(reportData.monthly), [reportData]);
 
-  if (isLoading) {
+  if (isLoading && !expenses.length && !incomes.length) {
     return <StatusView title="Report" message="Sto preparando gli analytics avanzati." />;
   }
 
   if (error) {
-    return <StatusView title="Errore report" message={error} />;
+    return <StatusView title="Errore report" message={error.message || "Impossibile caricare i report."} />;
   }
 
   const hasData = reportData.monthly.some((item) => item.incomes || item.expenses);

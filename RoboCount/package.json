@@ -12,6 +12,7 @@
     "typecheck": "node --eval \"console.log('No TypeScript sources present in RoboCount; skipping typecheck.')\""
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.101.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.30.1",

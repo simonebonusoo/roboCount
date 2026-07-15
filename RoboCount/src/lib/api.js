@@ -1,3 +1,5 @@
+import { invalidateAppData } from "./queryClient";
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api";
 const APP_DATA_CHANGED_EVENT = "monitor-spese:data-changed";
 const APP_AUTH_EXPIRED_EVENT = "monitor-spese:auth-expired";
@@ -47,6 +49,14 @@ function buildErrorMessage(response, data) {
   return "Operazione non riuscita.";
 }
 
+function buildNetworkErrorMessage(error) {
+  const message = String(error?.message || "").toLowerCase();
+  if (message.includes("failed to fetch") || message.includes("networkerror")) {
+    return "Impossibile contattare il backend. Verifica che RoboCount sia avviato correttamente e riprova.";
+  }
+  return "Connessione al server non riuscita. Riprova.";
+}
+
 async function request(path, options = {}, attempt = 0) {
   const method = String(options.method || "GET").toUpperCase();
   const isRetryableGet = method === "GET";
@@ -66,7 +76,9 @@ async function request(path, options = {}, attempt = 0) {
       await wait(GET_RETRY_DELAY_MS);
       return request(path, options, attempt + 1);
     }
-    throw error;
+    const networkError = new Error(buildNetworkErrorMessage(error));
+    networkError.cause = error;
+    throw networkError;
   }
 
   const { data } = await parseResponse(response);
@@ -114,6 +126,7 @@ export const api = {
 };
 
 export function notifyAppDataChanged(detail = { scope: "all" }) {
+  void invalidateAppData(detail?.scope || "all");
   window.dispatchEvent(new CustomEvent(APP_DATA_CHANGED_EVENT, { detail }));
 }
 

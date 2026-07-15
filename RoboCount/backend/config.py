@@ -131,6 +131,7 @@ def get_runtime_config(*, require_database: bool = True, require_session_secret:
     load_project_env()
 
     database_url = _getenv("DATABASE_URL")
+    legacy_database_url = _getenv("PYDATABASE_URL")
     session_secret = _getenv("SESSION_SECRET")
     cookie_secure_override = _getenv("MONITOR_SPESE_COOKIE_SECURE")
     configured_origins = _parse_csv_env("ALLOWED_ORIGINS") or _parse_csv_env("CORS_ORIGINS")
@@ -139,6 +140,11 @@ def get_runtime_config(*, require_database: bool = True, require_session_secret:
     if database_url:
         database_target = _parse_database_target(database_url)
         _validate_database_target(database_target)
+    elif legacy_database_url:
+        raise ConfigError(
+            "Variabile non valida: e stata trovata PYDATABASE_URL. "
+            "Rinominala in DATABASE_URL per consentire a RoboCount di connettersi a Supabase."
+        )
     elif require_database:
         raise ConfigError(
             "DATABASE_URL non impostata. Configura la stringa di connessione "
