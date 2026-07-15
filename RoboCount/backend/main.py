@@ -298,12 +298,12 @@ def get_current_user(
 CurrentUser = Annotated[dict, Depends(get_current_user)]
 
 
-def _build_expense_frame(current_username: str) -> pd.DataFrame:
-    return get_visible_expenses(get_expenses(), current_username)
+def _build_expense_frame(current_username: str, current_user: dict | None = None) -> pd.DataFrame:
+    return get_visible_expenses(get_expenses(), current_username, current_user)
 
 
-def _build_income_frame(current_username: str) -> pd.DataFrame:
-    return get_visible_incomes(get_incomes(), current_username)
+def _build_income_frame(current_username: str, current_user: dict | None = None) -> pd.DataFrame:
+    return get_visible_incomes(get_incomes(), current_username, current_user)
 
 
 def _filter_expenses(
@@ -414,6 +414,77 @@ def _build_income_list_summary(dataframe: pd.DataFrame) -> dict:
     }
 
 
+def _build_meta_options(current_user: dict, expenses: pd.DataFrame | None = None) -> dict:
+    current_username = current_user["username"]
+    category_items = get_category_items(current_username, visible_expenses=expenses)
+    categories = [item["name"] for item in category_items]
+
+    if is_admin_user(current_username):
+        usernames = get_usernames()
+        return {
+            "categories": categories,
+            "category_items": category_items,
+            "usernames": usernames,
+            "couple_members": [serialize_user(user) for user in list_users()],
+            "couple_member_count": len(usernames),
+            "couple_member_limit": len(usernames),
+            "expense_types": EXPENSE_TYPE_OPTIONS,
+            "split_options": SHARED_SPLIT_OPTIONS,
+        }
+
+    if _is_personal_account(current_user):
+        return {
+            "categories": categories,
+            "category_items": category_items,
+            "usernames": [current_username],
+            "couple_members": [serialize_user(current_user)],
+            "couple_member_count": 1,
+            "couple_member_limit": 1,
+            "expense_types": ["Personale"],
+            "split_options": ["equal"],
+        }
+
+    couple_usernames = get_couple_member_usernames(current_username)
+    couple_members = get_couple_member_details(current_username)
+    return {
+        "categories": categories,
+        "category_items": category_items,
+        "usernames": couple_usernames,
+        "couple_members": [serialize_user(user) for user in couple_members],
+        "couple_member_count": len(couple_usernames),
+        "couple_member_limit": 2,
+        "expense_types": EXPENSE_TYPE_OPTIONS,
+        "split_options": SHARED_SPLIT_OPTIONS,
+    }
+
+
+def _build_dashboard_payload(
+    current_username: str,
+    expenses: pd.DataFrame,
+    incomes: pd.DataFrame,
+    month_label: str,
+) -> dict:
+    filtered_expenses = apply_filters(expenses, month_label, "Tutte", "Tutti", "Tutte")
+    filtered_incomes = apply_income_filters(incomes, month_label)
+    metrics = build_dashboard_metrics(filtered_expenses, current_username)
+    category_summary = build_category_summary(filtered_expenses, current_username)
+    income_expense_summary = build_income_vs_expense_summary(incomes, expenses, current_username)
+
+    month_options = sorted(set(get_month_options(expenses) + get_month_options(incomes)), reverse=False)
+    if "Tutti" in month_options:
+        month_options = ["Tutti"] + sorted([item for item in month_options if item != "Tutti"], reverse=True)
+
+    return {
+        "selected_month": month_label,
+        "month_options": month_options,
+        "metrics": serialize_metrics(metrics),
+        "category_summary": serialize_category_summary(category_summary),
+        "income_expense_summary": serialize_income_expense_summary(income_expense_summary),
+        "recent_expenses": serialize_expense_frame(filtered_expenses.head(8)),
+        "recent_incomes": serialize_income_frame(filtered_incomes.head(8)),
+    }
+
+
 def _is_personal_account(user: dict) -> bool:
     return (user.get("account_type") or "couple") == "personal"
 
@@ -510,42 +581,7 @@ def auth_me(current_user: CurrentUser) -> dict:
 
 @app.get("/api/meta/options")
 def get_meta_options(current_user: CurrentUser) -> dict:
-    ensure_user_categories(current_user["username"])
-    if is_admin_user(current_user["username"]):
-        usernames = get_usernames()
-        return {
-            "categories": get_categories(current_user["username"]),
-            "category_items": get_category_items(current_user["username"]),
-            "usernames": usernames,
-            "couple_members": [serialize_user(user) for user in list_users()],
-            "couple_member_count": len(usernames),
-            "couple_member_limit": len(usernames),
-            "expense_types": EXPENSE_TYPE_OPTIONS,
-            "split_options": SHARED_SPLIT_OPTIONS,
-        }
-    if _is_personal_account(current_user):
-        return {
-            "categories": get_categories(current_user["username"]),
-            "category_items": get_category_items(current_user["username"]),
-            "usernames": [current_user["username"]],
-            "couple_members": [serialize_user(current_user)],
-            "couple_member_count": 1,
-            "couple_member_limit": 1,
-            "expense_types": ["Personale"],
-            "split_options": ["equal"],
-        }
-    couple_usernames = get_couple_member_usernames(current_user["username"])
-    couple_members = get_couple_member_details(current_user["username"])
-    return {
-        "categories": get_categories(current_user["username"]),
-        "category_items": get_category_items(current_user["username"]),
-        "usernames": couple_usernames,
-        "couple_members": [serialize_user(user) for user in couple_members],
-        "couple_member_count": len(couple_usernames),
-        "couple_member_limit": 2,
-        "expense_types": EXPENSE_TYPE_OPTIONS,
-        "split_options": SHARED_SPLIT_OPTIONS,
-    }
+    return _build_meta_options(current_user)
 
 
 @app.get("/api/admin/users")
@@ -763,26 +799,31 @@ def remove_category(category_name: str, current_user: CurrentUser, month_label: 
 @app.get("/api/dashboard")
 def get_dashboard(current_user: CurrentUser, month_label: str = "Tutti") -> dict:
     current_username = current_user["username"]
-    expenses = _build_expense_frame(current_username)
-    incomes = _build_income_frame(current_username)
-    filtered_expenses = apply_filters(expenses, month_label, "Tutte", "Tutti", "Tutte")
-    filtered_incomes = apply_income_filters(incomes, month_label)
-    metrics = build_dashboard_metrics(filtered_expenses, current_username)
-    category_summary = build_category_summary(filtered_expenses, current_username)
-    income_expense_summary = build_income_vs_expense_summary(incomes, expenses, current_username)
+    expenses = _build_expense_frame(current_username, current_user)
+    incomes = _build_income_frame(current_username, current_user)
+    return _build_dashboard_payload(current_username, expenses, incomes, month_label)
 
-    month_options = sorted(set(get_month_options(expenses) + get_month_options(incomes)), reverse=False)
-    if "Tutti" in month_options:
-        month_options = ["Tutti"] + sorted([item for item in month_options if item != "Tutti"], reverse=True)
 
+@app.get("/api/dashboard/summary")
+def get_dashboard_summary(current_user: CurrentUser, month_label: str = "Tutti") -> dict:
+    current_username = current_user["username"]
+    expenses = _build_expense_frame(current_username, current_user)
+    incomes = _build_income_frame(current_username, current_user)
+    shared_response = (
+        {"items": []}
+        if _is_personal_account(current_user)
+        else build_couple_balance_data(expenses, current_username, month_label="Tutti", status_filter="all")
+    )
     return {
-        "selected_month": month_label,
-        "month_options": month_options,
-        "metrics": serialize_metrics(metrics),
-        "category_summary": serialize_category_summary(category_summary),
-        "income_expense_summary": serialize_income_expense_summary(income_expense_summary),
-        "recent_expenses": serialize_expense_frame(filtered_expenses.head(8)),
-        "recent_incomes": serialize_income_frame(filtered_incomes.head(8)),
+        "meta": _build_meta_options(current_user, expenses),
+        "dashboard": _build_dashboard_payload(current_username, expenses, incomes, month_label),
+        "history": {
+            "expenses": serialize_expense_frame(expenses),
+            "incomes": serialize_income_frame(incomes),
+            "sharedExpenses": shared_response.get("items", []),
+            "expenseMonthOptions": get_month_options(expenses),
+            "incomeMonthOptions": get_month_options(incomes),
+        },
     }
 
 

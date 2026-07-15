@@ -932,8 +932,8 @@ def _get_user_id_for_categories(connection, username: str) -> int | None:
     return int(user["id"]) if user is not None else None
 
 
-def _get_visible_expense_categories(username: str, month_label: str = "") -> list[str]:
-    dataframe = get_visible_expenses(get_expenses(), username)
+def _get_visible_expense_categories(username: str, month_label: str = "", visible_expenses: pd.DataFrame | None = None) -> list[str]:
+    dataframe = visible_expenses.copy() if visible_expenses is not None else get_visible_expenses(get_expenses(), username)
     clean_month = _month_label_from_value(month_label)
     if clean_month and not dataframe.empty:
         dataframe = dataframe[dataframe["month_label"] == clean_month]
@@ -951,11 +951,15 @@ def _get_visible_category_usage(username: str, month_label: str = "") -> dict[st
     return usage
 
 
-def get_category_items(username: str, month_label: str = "") -> list[dict]:
+def get_category_items(username: str, month_label: str = "", visible_expenses: pd.DataFrame | None = None) -> list[dict]:
     clean_month = _month_label_from_value(month_label)
     ensure_user_categories(username)
-    visible_categories = _get_visible_expense_categories(username, clean_month)
-    usage = _get_visible_category_usage(username, clean_month)
+    visible_categories = _get_visible_expense_categories(username, clean_month, visible_expenses)
+    usage: dict[str, int] = {}
+    for category in visible_categories:
+        normalized = _normalize_category_name(category)
+        if normalized:
+            usage[normalized] = usage.get(normalized, 0) + 1
     items_by_key: dict[str, dict] = {}
 
     with get_connection() as connection:
@@ -1656,12 +1660,14 @@ def update_expense_settled(expense_id: int, status: bool) -> None:
         )
 
 
-def get_visible_expenses(dataframe: pd.DataFrame, current_username: str) -> pd.DataFrame:
+def get_visible_expenses(dataframe: pd.DataFrame, current_username: str, current_user: dict | None = None) -> pd.DataFrame:
     if dataframe.empty:
         return dataframe.copy()
-    if is_admin_user(current_username):
+    if current_user is not None and bool(current_user.get("is_admin")):
         return dataframe.copy()
-    current_user = get_user_by_username(current_username)
+    if current_user is None and is_admin_user(current_username):
+        return dataframe.copy()
+    current_user = current_user or get_user_by_username(current_username)
     if current_user is None:
         return dataframe.iloc[0:0].copy()
 
@@ -1699,10 +1705,12 @@ def get_incomes() -> pd.DataFrame:
     return dataframe
 
 
-def get_visible_incomes(dataframe: pd.DataFrame, current_username: str) -> pd.DataFrame:
+def get_visible_incomes(dataframe: pd.DataFrame, current_username: str, current_user: dict | None = None) -> pd.DataFrame:
     if dataframe.empty:
         return dataframe.copy()
-    if is_admin_user(current_username):
+    if current_user is not None and bool(current_user.get("is_admin")):
+        return dataframe.copy()
+    if current_user is None and is_admin_user(current_username):
         return dataframe.copy()
     return dataframe[dataframe["owner"] == current_username].copy()
 
@@ -1764,9 +1772,11 @@ def apply_filters(
     return filtered.sort_values(by=["expense_date", "id"], ascending=[False, False])
 
 
-def get_user_expense_amount(row: pd.Series | dict, current_username: str) -> float:
+def get_user_expense_amount(row: pd.Series | dict, current_username: str, is_current_admin: bool | None = None) -> float:
     amount = float(row.get("amount", 0.0) or 0.0)
-    if not current_username or is_admin_user(current_username):
+    if is_current_admin is None:
+        is_current_admin = is_admin_user(current_username)
+    if not current_username or is_current_admin:
         return amount
     if row.get("expense_type") != "Condivisa":
         return amount
@@ -1780,7 +1790,8 @@ def get_user_expense_amount(row: pd.Series | dict, current_username: str) -> flo
 def compute_user_expense_total(dataframe: pd.DataFrame, current_username: str) -> float:
     if dataframe.empty:
         return 0.0
-    return round(float(sum(get_user_expense_amount(row, current_username) for _, row in dataframe.iterrows())), 2)
+    is_current_admin = is_admin_user(current_username)
+    return round(float(sum(get_user_expense_amount(row, current_username, is_current_admin) for _, row in dataframe.iterrows())), 2)
 
 
 def compute_user_shared_expense_total(dataframe: pd.DataFrame, current_username: str) -> float:
@@ -1795,7 +1806,8 @@ def _with_user_expense_amount(dataframe: pd.DataFrame, current_username: str) ->
     if enriched.empty:
         enriched["user_amount"] = []
         return enriched
-    enriched["user_amount"] = [get_user_expense_amount(row, current_username) for _, row in enriched.iterrows()]
+    is_current_admin = is_admin_user(current_username)
+    enriched["user_amount"] = [get_user_expense_amount(row, current_username, is_current_admin) for _, row in enriched.iterrows()]
     return enriched
 
 

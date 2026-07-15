@@ -125,7 +125,7 @@ export function LoginPage() {
   async function openWhatsAppInvite() {
     try {
       const freshInviteUrl = await getFreshInviteUrl();
-      const text = encodeURIComponent("Unisciti a me su Monitor Spese: " + freshInviteUrl);
+      const text = encodeURIComponent("Unisciti a me su RoboCount: " + freshInviteUrl);
       window.open("https://wa.me/?text=" + text, "_blank", "noopener,noreferrer");
     } catch (inviteError) {
       setInviteFeedback(inviteError.message || "Impossibile generare il link invito");
@@ -135,8 +135,8 @@ export function LoginPage() {
   async function openEmailInvite() {
     try {
       const freshInviteUrl = await getFreshInviteUrl();
-      const subject = encodeURIComponent("Invito a Monitor Spese");
-      const body = encodeURIComponent("Ciao, gestiamo insieme le spese su Monitor Spese. Usa questo link: " + freshInviteUrl);
+      const subject = encodeURIComponent("Invito a RoboCount");
+      const body = encodeURIComponent("Ciao, gestiamo insieme le spese su RoboCount. Usa questo link: " + freshInviteUrl);
       window.location.href = "mailto:?subject=" + subject + "&body=" + body;
     } catch (inviteError) {
       setInviteFeedback(inviteError.message || "Impossibile generare il link invito");
@@ -172,7 +172,7 @@ function LoginStep({ form, setForm, error, submitting, onSubmit, onCreateAccount
   return (
     <section className="auth-step-card auth-login-card">
       <BrandMark />
-      <div className="auth-robot-stage auth-robot-stage-login"><img src={loginRobot} alt="Robot Monitor Spese" /></div>
+      <div className="auth-robot-stage auth-robot-stage-login"><img src={loginRobot} alt="Robot RoboCount" /></div>
       <div className="auth-step-copy centered"><h1>Bentornato!</h1><p>Accedi al tuo account</p></div>
       <form className="auth-step-form" onSubmit={onSubmit}>
         <AuthField label="Email o username" type="text" value={form.username} autoComplete="username" onChange={(value) => setForm((current) => ({ ...current, username: value }))} />
@@ -193,7 +193,7 @@ function RegisterStep({ form, setForm, error, submitting, registeredUser, onSubm
       <BackButton onClick={onBack} />
       <div className="auth-step-copy centered"><h1>Crea il tuo account</h1><p>Iniziamo! Inserisci i tuoi dati</p></div>
       <StepIndicator current="register" />
-      <div className="auth-register-robot"><img src={signupRobot} alt="Robot signup Monitor Spese" /></div>
+      <div className="auth-register-robot"><img src={signupRobot} alt="Robot signup RoboCount" /></div>
       <form className="auth-step-form" onSubmit={onSubmit}>
         <AuthField label="Nome" type="text" value={form.full_name} autoComplete="name" onChange={(value) => setForm((current) => ({ ...current, full_name: value }))} />
         <AuthField label="Email" type="email" value={form.email} autoComplete="email" onChange={(value) => setForm((current) => ({ ...current, email: value }))} />
@@ -235,9 +235,9 @@ function InvitePartnerStep({ inviteFeedback, onBack, onWhatsApp, onCopyLink, onE
   return (
     <section className="auth-step-card auth-onboarding-card auth-invite-card">
       <BackButton onClick={onBack} />
-      <div className="auth-step-copy centered"><h1>Invita il tuo partner</h1><p>Condividi Monitor Spese e gestite insieme le vostre spese</p></div>
+      <div className="auth-step-copy centered"><h1>Invita il tuo partner</h1><p>Condividi RoboCount e gestite insieme le vostre spese</p></div>
       <StepIndicator current="invite" />
-      <div className="auth-couple-robot-stage auth-couple-robot-stage-local"><img src={loginRobot} alt="Robot Monitor Spese" /><img src={signupRobot} alt="Robot partner Monitor Spese" /></div>
+      <div className="auth-couple-robot-stage auth-couple-robot-stage-local"><img src={loginRobot} alt="Robot RoboCount" /><img src={signupRobot} alt="Robot partner RoboCount" /></div>
       <div className="auth-invite-options" aria-label="Invita tramite">
         <InviteOption title="WhatsApp" subtitle="Invia un messaggio" icon="W" onClick={onWhatsApp} />
         <InviteOption title="Link" subtitle="Copia il link di invito" icon="L" onClick={onCopyLink} />
@@ -260,7 +260,7 @@ function AuthField({ label, value, onChange, type = "text", autoComplete, placeh
 }
 
 function BrandMark() {
-  return <div className="auth-brand-mark"><span>✦</span><strong>Monitor<br />Spese</strong></div>;
+  return <div className="auth-brand-mark"><span>✦</span><strong>Robo<br />Count</strong></div>;
 }
 
 function BackButton({ onClick }) {

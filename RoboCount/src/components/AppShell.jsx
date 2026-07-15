@@ -49,8 +49,8 @@ export function AppShell() {
   const profileMenuRef = useRef(null);
   const {
     data: metaOptions,
-    error: metaOptionsError,
-  } = useMetaOptionsQuery({ enabled: Boolean(user?.username) });
+    refetch: refetchMetaOptions,
+  } = useMetaOptionsQuery({ enabled: false });
   const isPersonalAccount = user?.account_type === "personal";
   const visibleNavigation = isPersonalAccount
     ? navigation.filter((item) => item.to !== "/couple-balance")
@@ -157,6 +157,30 @@ export function AppShell() {
     await openExpenseDialog();
   }
 
+  function handleTopbarSearchKeyDown(event) {
+    if (event.key !== "Enter") {
+      return;
+    }
+
+    const searchTerm = event.currentTarget.value.trim().toLowerCase();
+    if (!searchTerm) {
+      return;
+    }
+
+    const searchableRoutes = [
+      ...visibleNavigation,
+      { to: "/profile", label: "Profilo" },
+      ...(user?.is_admin ? [{ to: "/admin/users", label: "Admin" }] : []),
+    ];
+    const match = searchableRoutes.find((item) => item.label.toLowerCase().includes(searchTerm));
+    if (!match) {
+      return;
+    }
+
+    event.currentTarget.value = "";
+    navigate(match.to);
+  }
+
   async function handleAddChoice(type) {
     setIsAddChoiceOpen(false);
 
@@ -219,9 +243,22 @@ export function AppShell() {
     setExpenseFormError("");
     setIsExpenseDialogOpen(true);
 
-    if (!expenseMeta && metaOptionsError) {
-      setExpenseFormError(metaOptionsError.message || "Impossibile caricare le opzioni per la nuova spesa.");
+    if (expenseMeta) {
+      return;
     }
+
+    try {
+      const response = await refetchMetaOptions();
+      if (response.data) {
+        setExpenseMeta(response.data);
+      }
+      if (response.error) {
+        setExpenseFormError(response.error.message || "Impossibile caricare le opzioni per la nuova spesa.");
+      }
+    } catch (requestError) {
+      setExpenseFormError(requestError.message || "Impossibile caricare le opzioni per la nuova spesa.");
+    }
+
   }
 
   function closeExpenseDialog() {
@@ -288,14 +325,14 @@ export function AppShell() {
         aria-hidden={!isSidebarOpen}
       />
 
-      <aside className={`sidebar${isSidebarOpen ? " is-open" : ""}`} aria-hidden={!isSidebarOpen}>
+      <aside className={`sidebar${isSidebarOpen ? " is-open" : ""}`}>
         <div className="sidebar__brand">
           <span className="sidebar__brand-mark">
             <BrandIcon />
           </span>
           <span className="sidebar__brand-text">
-            <strong>Monitor</strong>
-            <strong>Spese</strong>
+            <strong>RoboCount</strong>
+            <span>v1.2.0</span>
           </span>
         </div>
 
@@ -358,9 +395,15 @@ export function AppShell() {
                   <BrandIcon />
                 </span>
                 <span className="top-shell__brand-text">
-                  <strong>Monitor Spese</strong>
+                  <strong>RoboCount</strong>
                 </span>
               </button>
+
+              <label className="top-shell__search" aria-label="Cerca o vai a una sezione">
+                <SearchIcon />
+                <input type="search" placeholder="Cerca o vai a..." onKeyDown={handleTopbarSearchKeyDown} />
+                <kbd>Cmd K</kbd>
+              </label>
 
               <div className="top-shell__right">
                 <ThemeToggle theme={theme} setTheme={setTheme} />
@@ -590,6 +633,15 @@ function PlusIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="M12 5.5v13M5.5 12h13" />
+    </svg>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="10.75" cy="10.75" r="5.75" />
+      <path d="m15.25 15.25 4 4" />
     </svg>
   );
 }

@@ -6,7 +6,7 @@ import { StatusView } from "../components/StatusView";
 import { MonthNavigation } from "../components/MonthNavigation";
 import { UltimiMovimentiCard } from "../components/UltimiMovimentiCard";
 import { useAuth } from "../context/AuthContext";
-import { useDashboardQuery, useFinancialHistoryQuery, useMetaOptionsQuery } from "../hooks/useAppData";
+import { useDashboardSummaryQuery } from "../hooks/useAppData";
 import { getRobotAvatar } from "../utils/avatars";
 import {
   ExpenseForm,
@@ -17,11 +17,8 @@ import {
 } from "./ExpensesPage";
 import {
   CartesianGrid,
-  Cell,
   Line,
   LineChart,
-  Pie,
-  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -46,29 +43,19 @@ export function HomePage() {
   const accountType = user?.account_type || "couple";
   const isPersonalAccount = accountType === "personal";
   const {
-    data: metaOptions,
-    error: metaError,
-    isLoading: isMetaLoading,
-    isFetching: isMetaFetching,
-  } = useMetaOptionsQuery({ enabled: Boolean(user?.username) });
-  const {
-    data: financialHistory,
-    error: historyError,
-    isLoading: isHistoryLoading,
-    isFetching: isHistoryFetching,
-  } = useFinancialHistoryQuery(accountType, { enabled: Boolean(user?.username) });
+    data: dashboardSummary,
+    error: summaryError,
+    isLoading: isSummaryLoading,
+    isFetching: isSummaryFetching,
+  } = useDashboardSummaryQuery(selectedMonth || getCurrentMonthLabel(), accountType, { enabled: Boolean(user?.username) });
+  const metaOptions = dashboardSummary?.meta;
+  const dashboardData = dashboardSummary?.dashboard;
+  const financialHistory = dashboardSummary?.history;
   const allExpenses = financialHistory?.expenses || [];
   const allIncomes = financialHistory?.incomes || [];
   const allSharedExpenses = financialHistory?.sharedExpenses || [];
   const coupleMembers = metaOptions?.usernames || [];
   const coupleMemberProfiles = metaOptions?.couple_members || [];
-  const coupleUserCount = metaOptions?.couple_member_count ?? coupleMembers.length;
-  const {
-    data: dashboardData,
-    error: dashboardError,
-    isLoading: isDashboardLoading,
-    isFetching: isDashboardFetching,
-  } = useDashboardQuery(selectedMonth, { enabled: Boolean(selectedMonth) });
   const payerOptions = useMemo(() => {
     const usernames = expenseMeta?.usernames || [];
     if (!user?.username || usernames.includes(user.username)) {
@@ -118,9 +105,9 @@ export function HomePage() {
   }, [monthOptions, requestedMonth, selectedMonth]);
 
   useEffect(() => {
-    const nextError = metaError?.message || dashboardError?.message || historyError?.message || "";
+    const nextError = summaryError?.message || "";
     setError(nextError);
-  }, [dashboardError, historyError, metaError]);
+  }, [summaryError]);
 
   const homeSummary = useMemo(() => {
     if (!selectedMonth) {
@@ -295,12 +282,8 @@ export function HomePage() {
   }, [coupleMembers, searchParams]);
 
   const hasHistoricalData = allExpenses.length > 0 || allIncomes.length > 0 || allSharedExpenses.length > 0;
-  const isPageBootstrapping = (
-    (isMetaLoading && !expenseMeta)
-    || (isHistoryLoading && !hasHistoricalData && !dashboardData)
-    || (isDashboardLoading && !dashboardData && !hasHistoricalData)
-  );
-  const isBackgroundRefreshing = isMetaFetching || isHistoryFetching || isDashboardFetching;
+  const isPageBootstrapping = isSummaryLoading && !dashboardData && !hasHistoricalData;
+  const isBackgroundRefreshing = isSummaryFetching && Boolean(dashboardData || hasHistoricalData);
 
   if (isPageBootstrapping) {
     return <StatusView title="Home" message="Sto ricostruendo la panoramica principale." />;
@@ -316,195 +299,89 @@ export function HomePage() {
 
   return (
     <section className="page home-page">
-      <div className="home-reference-header">
-        <div className="home-reference-copy">
-          <h1>Bentornato {String(user?.username || "utente").toLowerCase()}</h1>
-          <p>Ogni movimento che registri ti avvicina a un mese piu sereno.</p>
+      <header className="home-ops-header">
+        <div>
+          <h1>Ciao, {getDisplayName(user)}</h1>
+          <p>Una home operativa per controllare spese, entrate e saldo del periodo.</p>
         </div>
+        <MonthNavigation
+          label={formatMonthHeading(selectedMonth)}
+          onPrevious={() => shiftSelectedMonth(-1)}
+          onNext={() => shiftSelectedMonth(1)}
+        />
+      </header>
 
-        <div className="home-saas-month-nav">
-          <MonthNavigation
-            label={formatMonthHeading(selectedMonth)}
-            onPrevious={() => shiftSelectedMonth(-1)}
-            onNext={() => shiftSelectedMonth(1)}
-          />
-        </div>
-      </div>
+      <section className="home-quick-actions" aria-label="Azioni rapide">
+        <HomeQuickAction icon="expense" label="Nuova spesa" onClick={() => navigate(`${buildExpenseUrl()}&action=new`)} />
+        <HomeQuickAction icon="income" label="Nuova entrata" onClick={() => navigate(`${buildIncomeUrl()}&action=new`)} />
+        <HomeQuickAction icon="balance" label="Saldo coppia" onClick={() => navigate(handleMetricNavigation("balance"))} disabled={isPersonalAccount} />
+        <HomeQuickAction icon="report" label="Report" onClick={() => navigate("/report")} />
+        <HomeQuickAction icon="profile" label="Profilo" onClick={() => setSelectedCoupleMember(user?.username || "")} />
+      </section>
 
-      <div className="home-saas-grid">
-        <section className={`home-primary-balance-card ${homeSummary.coupleBalance > 0 ? "is-credit" : homeSummary.coupleBalance < 0 ? "is-debit" : "is-even"}`}>
-          <button
-            type="button"
-            className="home-primary-avatar"
-            onClick={() => setSelectedCoupleMember(user?.username || "")}
-            aria-label="Apri anteprima profilo"
-          >
-            <img src={getRobotAvatar(user?.avatar_id || user?.avatarId).src} alt="" />
-          </button>
-          <div className="home-primary-balance-copy">
-            <p>{balanceView.label}</p>
-            <strong>{balanceView.amount}</strong>
-            <span>{balanceView.description}</span>
-            <div className="home-primary-balance-actions">
-              <button type="button" className="primary-button" onClick={() => navigate(handleMetricNavigation("balance"))}>
-                Vedi saldo di coppia
-              </button>
-              <button type="button" className="secondary-button" onClick={() => navigate(`${buildExpenseUrl()}&action=new`)}>
-                Nuova spesa
-              </button>
-            </div>
+      <section className="home-kpi-strip" aria-label="Indicatori principali">
+        <HomeKpiCard label="Entrate" value={formatCurrency(homeSummary.totalIncomes)} note={monthTrendRows.find((item) => item.key === "income")?.value || "n.d."} tone="positive" onClick={() => navigate(buildIncomeUrl())} />
+        <HomeKpiCard label="Uscite" value={formatCurrency(homeSummary.totalExpenses)} note={`${homeSummary.expenseCount} movimenti`} tone="expense" onClick={() => navigate(handleMetricNavigation("total_month"))} />
+        <HomeKpiCard label="Risparmio" value={formatCurrency(homeSummary.savings)} note={homeSummary.balanceNote} tone={homeSummary.savings >= 0 ? "positive" : "danger"} onClick={() => navigate("/risparmi")} />
+        <HomeKpiCard label="Saldo coppia" value={balanceView.amount} note={balanceView.label} tone={homeSummary.coupleBalance >= 0 ? "positive" : "danger"} onClick={() => navigate(handleMetricNavigation("balance"))} />
+        <HomeKpiCard label="Periodo" value={homeSummary.periodLabel} note={isBackgroundRefreshing ? "Aggiornamento..." : "Dati aggiornati"} tone="neutral" />
+      </section>
+
+      <section className="home-work-grid">
+        <article className="ops-panel ops-panel--list">
+          <div className="ops-panel__head">
+            <h2>Movimenti recenti</h2>
+            <button type="button" onClick={() => navigate(buildExpenseUrl())}>Tutti</button>
           </div>
-
-          <aside className="home-hero-kpi-panel" aria-label="Indicatori principali">
-            {[
-              {
-                key: "income",
-                label: "Entrate",
-                value: formatCurrency(homeSummary.totalIncomes),
-                row: monthTrendRows.find((item) => item.key === "income"),
-                tone: "positive",
-                href: buildIncomeUrl(),
-              },
-              {
-                key: "expenses",
-                label: "Spese",
-                value: formatCurrency(homeSummary.totalExpenses),
-                row: monthTrendRows.find((item) => item.key === "expenses"),
-                tone: "expense",
-                href: handleMetricNavigation("total_month"),
-              },
-              {
-                key: "savings",
-                label: "Risparmi",
-                value: formatCurrency(homeSummary.savings),
-                row: monthTrendRows.find((item) => item.key === "savings"),
-                tone: "saving",
-                href: "/risparmi",
-              },
-            ].map((item) => (
-              <button
-                key={item.key}
-                type="button"
-                className={`home-hero-kpi-row ${item.tone}`}
-                onClick={() => navigate(item.href)}
-              >
-                <span className="home-hero-kpi-icon"><TrendIcon direction={item.row?.direction} /></span>
-                <span className="home-hero-kpi-copy">
-                  <small>{item.label}</small>
-                  <strong>{item.value}</strong>
-                  <em>{item.row?.subtitle || "vs periodo precedente"}</em>
-                </span>
-                <span className="home-hero-kpi-trend">{item.row?.value || "n.d."}</span>
-              </button>
-            ))}
-          </aside>
-        </section>
-      </div>
-
-      <div className="home-dashboard-grid home-dashboard-grid--secondary">
-        <div className="home-main-column">
-          <section className="home-analytics-section panel">
-            <section className="home-analytics-categories">
-              <h2>DOVE VANNO LE TUE SPESE</h2>
-              <div className="home-analytics-category-list">
-                {chartData.categoryDistribution.slice(0, 5).map((entry) => (
-                  <button
-                    key={entry.label}
-                    type="button"
-                    className="home-analytics-category-row"
-                    onClick={() => openCategoryPreview(entry)}
-                  >
-                    <span className="home-analytics-category-name">
-                      <i style={{ "--category-color": entry.color }}>
-                        <CategoryIcon label={entry.label} />
-                      </i>
-                      {entry.label}
-                    </span>
-                    <strong>{entry.percentage}%</strong>
-                  </button>
-                ))}
-              </div>
-            </section>
-
-            <section className="home-analytics-donut">
-              <div className="home-analytics-donut__chart">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Tooltip content={<ChartTooltip formatter={formatCurrency} />} />
-                    <Pie
-                      data={chartData.categoryDistribution}
-                      dataKey="value"
-                      nameKey="label"
-                      innerRadius={54}
-                      outerRadius={86}
-                      paddingAngle={0}
-                      stroke="none"
-                      onClick={openCategoryPreview}
-                      className="home-analytics-pie"
-                    >
-                      {chartData.categoryDistribution.map((entry) => (
-                        <Cell key={entry.label} fill={entry.color} className="home-analytics-pie-cell" />
-                      ))}
-                    </Pie>
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-            </section>
-
-            <section className="home-analytics-line">
-              <h2>ANDAMENTO MESE</h2>
-              <div className="home-analytics-line__chart">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={chartData.monthTrend} margin={{ top: 12, right: 18, left: 0, bottom: 0 }}>
-                    <CartesianGrid vertical={false} stroke="rgba(255,255,255,0.08)" strokeDasharray="0" />
-                    <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,0.4)", fontSize: 11 }} />
-                    <YAxis axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,0.4)", fontSize: 11 }} width={54} tickCount={4} domain={[0, "dataMax + 100"]} tickFormatter={(value) => `${Number(value).toLocaleString("it-IT")} €`} />
-                    <Tooltip content={<ChartTooltip formatter={formatCurrency} />} cursor={{ stroke: "rgba(255,255,255,0.08)", strokeWidth: 1 }} />
-                    <Line
-                      type="monotone"
-                      dataKey="entrate"
-                      name="Entrate"
-                      stroke="#22c55e"
-                      strokeWidth={3}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      connectNulls
-                      dot={{ r: 3, fill: "#22c55e", stroke: "rgba(34,197,94,0.25)", strokeWidth: 3 }}
-                      activeDot={{ r: 5, fill: "#22c55e", stroke: "rgba(34,197,94,0.35)", strokeWidth: 4 }}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="spese"
-                      name="Spese"
-                      stroke="#f59e0b"
-                      strokeWidth={3}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      connectNulls
-                      dot={{ r: 3, fill: "#f59e0b", stroke: "rgba(245,158,11,0.25)", strokeWidth: 3 }}
-                      activeDot={{ r: 5, fill: "#f59e0b", stroke: "rgba(245,158,11,0.35)", strokeWidth: 4 }}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="home-analytics-line__legend" aria-hidden="true">
-                <span><i className="income" />Entrate</span>
-                <span><i className="expense" />Spese</span>
-              </div>
-              {isBackgroundRefreshing ? <p className="panel-inline-note">Aggiornamento dati in background.</p> : null}
-            </section>
-          </section>
-        </div>
-
-        <div className="home-side-column">
           <UltimiMovimentiCard
             movements={latestMovements}
             currentUsername={user?.username || ""}
             onSelectMovement={openExpenseEditDialog}
             onViewAll={() => navigate(buildExpenseUrl())}
           />
-        </div>
-      </div>
+        </article>
+
+        <article className="ops-panel">
+          <div className="ops-panel__head">
+            <h2>Categorie principali</h2>
+            <button type="button" onClick={() => navigate(buildExpenseUrl())}>Analizza</button>
+          </div>
+          <div className="home-category-table">
+            {chartData.categoryDistribution.length ? (
+              chartData.categoryDistribution.slice(0, 6).map((entry) => (
+                <button key={entry.label} type="button" className="home-category-line" onClick={() => openCategoryPreview(entry)}>
+                  <span>
+                    <i style={{ "--category-color": entry.color }}><CategoryIcon label={entry.label} /></i>
+                    {entry.label}
+                  </span>
+                  <strong>{entry.percentage}%</strong>
+                </button>
+              ))
+            ) : (
+              <div className="home-category-empty">Nessuna categoria nel periodo selezionato.</div>
+            )}
+          </div>
+        </article>
+
+        <article className="ops-panel ops-panel--chart">
+          <div className="ops-panel__head">
+            <h2>Andamento mese</h2>
+            <span>{homeSummary.monthComparison?.value || ""}</span>
+          </div>
+          <div className="home-line-compact">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={chartData.monthTrend} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+                <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
+                <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: "var(--chart-axis)", fontSize: 11 }} />
+                <YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--chart-axis)", fontSize: 11 }} width={48} tickFormatter={(value) => `${Number(value).toLocaleString("it-IT")} €`} />
+                <Tooltip content={<ChartTooltip formatter={formatCurrency} />} cursor={{ stroke: "var(--border)" }} />
+                <Line type="monotone" dataKey="entrate" name="Entrate" stroke="var(--success)" strokeWidth={2.4} dot={false} connectNulls />
+                <Line type="monotone" dataKey="spese" name="Spese" stroke="var(--warning)" strokeWidth={2.4} dot={false} connectNulls />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </article>
+      </section>
 
       {selectedCoupleMember ? (
         <Dialog
@@ -850,21 +727,44 @@ function ChartTooltip({ active, payload, label, formatter }) {
   );
 }
 
-function TrendIcon({ direction }) {
-  if (direction === "down") {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M4.75 7.5 9.5 12.25l3.25-3.25 6.5 7.5" />
-        <path d="M14.25 16.5h5v-5" />
-      </svg>
-    );
-  }
+function HomeQuickAction({ icon, label, onClick, disabled = false }) {
+  return (
+    <button type="button" className="home-quick-action" onClick={onClick} disabled={disabled}>
+      <HomeActionIcon name={icon} />
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function HomeKpiCard({ label, value, note, tone = "neutral", onClick }) {
+  const Tag = onClick ? "button" : "article";
+  return (
+    <Tag type={onClick ? "button" : undefined} className={`home-kpi-card ${tone}`} onClick={onClick}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{note}</small>
+    </Tag>
+  );
+}
+
+function HomeActionIcon({ name }) {
+  const paths = {
+    expense: ["M12 5.5v13", "m17 13.5-5 5-5-5", "M5.5 5.5h13"],
+    income: ["M12 18.5V5.5", "M7 10.5l5-5 5 5", "M5.5 18.5h13"],
+    balance: ["M6.5 7.5h11", "M8 7.5l-3 6h6l-3-6", "M16 7.5l-3 6h6l-3-6", "M12 5.5v13"],
+    report: ["M5.5 18.5V5.5", "M5.5 18.5h13", "M8.5 15v-3.5", "M12 15V8.5", "M15.5 15v-5"],
+    profile: ["M12 12.25a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z", "M5.5 19c1.15-2.75 3.55-4.25 6.5-4.25s5.35 1.5 6.5 4.25"],
+  };
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M4.75 16.5 9.5 11.75l3.25 3.25 6.5-7.5" />
-      <path d="M14.25 7.5h5v5" />
+      {(paths[name] || paths.expense).map((path) => <path key={path} d={path} />)}
     </svg>
   );
+}
+
+function getDisplayName(user) {
+  const raw = user?.full_name || user?.username || "utente";
+  return String(raw).split(" ")[0] || "utente";
 }
 
 function buildHomeBalanceView(balance, partnerName) {
@@ -985,30 +885,6 @@ function formatPercentageDelta(currentValue, previousValue) {
   }
   const percentage = ((currentValue - previousValue) / Math.abs(previousValue)) * 100;
   return `${percentage >= 0 ? "+" : ""}${percentage.toLocaleString("it-IT", { maximumFractionDigits: 0 })}%`;
-}
-
-function FinancialCard({ label, value, note, accent, onClick, className = "" }) {
-  return (
-    <button type="button" className={`financial-card financial-card-${accent} financial-card-button ${className}`.trim()} onClick={onClick}>
-      <div className="financial-card-label">{label}</div>
-      <div className="financial-card-value">{value}</div>
-      <div className="financial-card-note">{note}</div>
-    </button>
-  );
-}
-
-function getMemberSharedTotal(member, expenses) {
-  return expenses.reduce((total, expense) => total + getMemberExpenseShare(member, expense), 0);
-}
-
-function getMemberExpenseShare(member, expense) {
-  if (!member || !expense) {
-    return 0;
-  }
-  if (expense.paid_by === member) {
-    return Number(expense.payer_share || 0);
-  }
-  return Number(expense.partner_share || 0);
 }
 
 function normalizeMonthOptions(options, expenses, incomes) {
@@ -1185,16 +1061,6 @@ function buildCoupleBalanceNote(balance) {
     return `Da pagare: ${formatCurrency(Math.abs(balance))}`;
   }
   return "Niente da regolare";
-}
-
-function buildBalanceLabel(balance) {
-  if (balance > 0) {
-    return `+${formatCurrency(balance)}`;
-  }
-  if (balance < 0) {
-    return `-${formatCurrency(Math.abs(balance))}`;
-  }
-  return "In pari";
 }
 
 function createEmptySummary() {
@@ -1394,111 +1260,6 @@ function CategoryIcon({ label }) {
       <path d="M9.25 10h5.5M9.25 13.25h5.5" />
     </svg>
   );
-}
-
-function buildCoupleBalanceInsight({ expenses, currentUsername, members }) {
-  const partnerName = (members || []).find((member) => member && member !== currentUsername) || "Partner";
-  const currentLabel = currentUsername || "Tu";
-
-  if (!expenses.length || !currentUsername) {
-    return {
-      status: "neutral",
-      statusLabel: "Saldo in equilibrio",
-      directionText: "Non ci sono spese condivise sufficienti per analizzare il saldo.",
-      netAmount: 0,
-      currentLabel,
-      partnerLabel: partnerName,
-      currentPaid: 0,
-      partnerPaid: 0,
-      currentPercent: 0,
-      partnerPercent: 0,
-      compensatedAmount: 0,
-      compensatedPercent: 0,
-      remainingAmount: 0,
-      remainingPercent: 0,
-      creditorLabel: "Nessuno",
-    };
-  }
-
-  const currentPaid = roundCurrency(
-    expenses
-      .filter((item) => item.paid_by === currentUsername)
-      .reduce((total, item) => total + Number(item.amount || 0), 0),
-  );
-
-  const partnerPaid = roundCurrency(
-    expenses
-      .filter((item) => item.paid_by && item.paid_by !== currentUsername)
-      .reduce((total, item) => total + Number(item.amount || 0), 0),
-  );
-
-  const totalPaid = currentPaid + partnerPaid;
-  const netBalance = roundCurrency(computeCoupleBalance(expenses, currentUsername));
-  const remainingAmount = Math.abs(netBalance);
-  const compensatedAmount = Math.max(0, roundCurrency(totalPaid - remainingAmount));
-
-  const currentPercent = totalPaid ? Math.max(8, (currentPaid / totalPaid) * 100) : 0;
-  const partnerPercent = totalPaid ? Math.max(8, (partnerPaid / totalPaid) * 100) : 0;
-  const compensatedPercent = totalPaid ? (compensatedAmount / totalPaid) * 100 : 0;
-  const remainingPercent = totalPaid ? (remainingAmount / totalPaid) * 100 : 0;
-
-  if (netBalance > 0) {
-    return {
-      status: "positive",
-      statusLabel: "Ti devono",
-      directionText: `${partnerName} deve versarti ${formatCurrency(netBalance)} per riallineare il saldo.`,
-      netAmount: netBalance,
-      currentLabel: "Tu",
-      partnerLabel: partnerName,
-      currentPaid,
-      partnerPaid,
-      currentPercent,
-      partnerPercent,
-      compensatedAmount,
-      compensatedPercent,
-      remainingAmount,
-      remainingPercent,
-      creditorLabel: "Tu",
-    };
-  }
-
-  if (netBalance < 0) {
-    return {
-      status: "negative",
-      statusLabel: "Devi pagare",
-      directionText: `Devi versare ${formatCurrency(Math.abs(netBalance))} a ${partnerName} per chiudere il delta.`,
-      netAmount: Math.abs(netBalance),
-      currentLabel: "Tu",
-      partnerLabel: partnerName,
-      currentPaid,
-      partnerPaid,
-      currentPercent,
-      partnerPercent,
-      compensatedAmount,
-      compensatedPercent,
-      remainingAmount,
-      remainingPercent,
-      creditorLabel: partnerName,
-    };
-  }
-
-  return {
-    status: "neutral",
-    statusLabel: "Saldo equilibrato",
-    directionText: "Le spese condivise risultano gia compensate tra voi due.",
-    netAmount: 0,
-    currentLabel: "Tu",
-    partnerLabel: partnerName,
-    currentPaid,
-    partnerPaid,
-    currentPercent,
-    partnerPercent,
-    compensatedAmount,
-    compensatedPercent,
-    remainingAmount: 0,
-    remainingPercent: 0,
-    creditorLabel: "Nessuno",
-  };
 }
 
 function formatShortDayLabel(value) {
