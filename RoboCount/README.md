@@ -24,6 +24,7 @@ RoboCount/
 ├── services.py
 ├── package.json
 ├── requirements.txt
+├── requirements-dev.txt
 ├── run-dev.sh
 └── vercel.json
 ```
@@ -60,7 +61,7 @@ Installazione backend:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
 Sviluppo completo:
@@ -117,6 +118,12 @@ Environment variables richieste:
 - `MONITOR_SPESE_COOKIE_SECURE=true`
 
 `ALLOWED_ORIGINS` e `VITE_API_BASE_URL` sono opzionali. Con frontend e API sullo stesso dominio, `VITE_API_BASE_URL=/api` e il comportamento di default sono gia sufficienti.
+
+Nota bundle Python:
+
+- `requirements.txt` contiene solo dipendenze runtime della Function Vercel.
+- `requirements-dev.txt` aggiunge strumenti locali/opzionali come `uvicorn` e `reportlab`.
+- `vercel.json` esclude dalla Function sorgenti frontend, cache, virtualenv, output Vite e test pesanti delle librerie Python.
 
 ## Note applicative
 

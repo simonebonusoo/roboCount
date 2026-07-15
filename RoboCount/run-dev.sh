@@ -9,6 +9,7 @@ PYTHON_BIN="$VENV_DIR/bin/python"
 PIP_BIN="$VENV_DIR/bin/pip"
 ENV_FILE="$ROOT_DIR/.env"
 REQUIREMENTS_FILE="$ROOT_DIR/requirements.txt"
+DEV_REQUIREMENTS_FILE="$ROOT_DIR/requirements-dev.txt"
 PYTHON_MARKER="$VENV_DIR/.requirements.sha256"
 NODE_MODULES_DIR="$ROOT_DIR/node_modules"
 NODE_LOCKFILE="$ROOT_DIR/package-lock.json"
@@ -81,9 +82,12 @@ fi
 if [ ! -f "$REQUIREMENTS_FILE" ]; then
   fail "requirements.txt non trovato."
 fi
+if [ ! -f "$DEV_REQUIREMENTS_FILE" ]; then
+  fail "requirements-dev.txt non trovato."
+fi
 
 REQUIREMENTS_HASH="$(
-  shasum -a 256 "$REQUIREMENTS_FILE" | awk '{print $1}'
+  shasum -a 256 "$REQUIREMENTS_FILE" "$DEV_REQUIREMENTS_FILE" | shasum -a 256 | awk '{print $1}'
 )"
 
 NEED_PYTHON_INSTALL=0
@@ -91,13 +95,13 @@ if [ ! -f "$PYTHON_MARKER" ] || [ "$(cat "$PYTHON_MARKER" 2>/dev/null || true)" 
   NEED_PYTHON_INSTALL=1
 fi
 
-if ! "$PYTHON_BIN" -c "import fastapi, uvicorn, psycopg, psycopg_pool, dotenv" >/dev/null 2>&1; then
+if ! "$PYTHON_BIN" -c "import fastapi, uvicorn, psycopg, psycopg_pool" >/dev/null 2>&1; then
   NEED_PYTHON_INSTALL=1
 fi
 
 if [ "$NEED_PYTHON_INSTALL" -eq 1 ]; then
   log "Installo o aggiorno le dipendenze Python della .venv..."
-  "$PIP_BIN" install -r "$REQUIREMENTS_FILE"
+  "$PIP_BIN" install -r "$DEV_REQUIREMENTS_FILE"
   printf '%s' "$REQUIREMENTS_HASH" > "$PYTHON_MARKER"
 fi
 

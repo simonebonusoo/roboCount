@@ -1,5 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/index.py": {
+      "excludeFiles": "{src/**,node_modules/**,dist/**,.venv/**,__pycache__/**,**/__pycache__/**,**/*.pyc,**/*.pyo,.pytest_cache/**,.mypy_cache/**,.ruff_cache/**,.git/**,.vercel/**,**/pandas/tests/**,**/numpy/**/tests/**,**/numpy/tests/**,**/reportlab/**,**/reportlab-*.dist-info/**,**/uvicorn/**,**/uvicorn-*.dist-info/**,**/dotenv/**,**/python_dotenv-*.dist-info/**}"
+    }
+  },
   "rewrites": [
     {
       "source": "/api/:path*",

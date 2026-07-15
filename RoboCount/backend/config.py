@@ -3,9 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = PROJECT_ROOT / ".env"
 _ENV_LOADED = False
@@ -37,8 +34,26 @@ def load_project_env() -> None:
     global _ENV_LOADED
     if _ENV_LOADED:
         return
-    load_dotenv(ENV_FILE, override=False)
+    if ENV_FILE.exists():
+        import os
+
+        for raw_line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key or key in os.environ:
+                continue
+            os.environ[key] = _clean_env_value(value)
     _ENV_LOADED = True
+
+
+def _clean_env_value(value: str) -> str:
+    clean_value = value.strip()
+    if len(clean_value) >= 2 and clean_value[0] == clean_value[-1] and clean_value[0] in {"'", '"'}:
+        return clean_value[1:-1]
+    return clean_value
 
 
 def _getenv(name: str) -> str:
