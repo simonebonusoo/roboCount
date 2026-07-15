@@ -5,7 +5,7 @@
   "outputDirectory": "RoboCount/dist",
   "functions": {
     "RoboCount/api/index.py": {
-      "excludeFiles": "{RoboCount/src/**,RoboCount/node_modules/**,RoboCount/dist/**,RoboCount/.venv/**,RoboCount/__pycache__/**,RoboCount/**/__pycache__/**,RoboCount/**/*.pyc,RoboCount/**/*.pyo,RoboCount/.pytest_cache/**,RoboCount/.mypy_cache/**,RoboCount/.ruff_cache/**,.git/**,.vercel/**,RoboCount/.vercel/**,**/pandas/tests/**,**/numpy/**/tests/**,**/numpy/tests/**,**/reportlab/**,**/reportlab-*.dist-info/**,**/uvicorn/**,**/uvicorn-*.dist-info/**,**/dotenv/**,**/python_dotenv-*.dist-info/**}"
+      "excludeFiles": "{RoboCount/src/**,RoboCount/node_modules/**,RoboCount/.venv/**,RoboCount/dist/**}"
     }
   },
   "rewrites": [
