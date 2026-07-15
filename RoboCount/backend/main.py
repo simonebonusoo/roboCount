@@ -14,6 +14,7 @@ import pandas as pd
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
+from backend.config import get_runtime_config
 from backend.schemas import (
     AdminUserUpdateRequest,
     AvatarUpdateRequest,
@@ -41,7 +42,7 @@ from backend.serializers import (
     serialize_metrics,
     serialize_user,
 )
-from database import initialize_database
+from database import close_pool, initialize_database
 from services import (
     EXPENSE_TYPE_OPTIONS,
     SHARED_SPLIT_OPTIONS,
@@ -109,6 +110,7 @@ LOGIN_RATE_LIMIT_WINDOW_SECONDS = 300
 LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 5
 LOGIN_RATE_LIMIT_BLOCK_SECONDS = 300
 LOGIN_ATTEMPTS: dict[str, dict[str, float | list[float]]] = {}
+RUNTIME_CONFIG = get_runtime_config(require_database=False, require_session_secret=True)
 
 
 def _get_allowed_origins() -> list[str]:
@@ -116,11 +118,8 @@ def _get_allowed_origins() -> list[str]:
         "http://127.0.0.1:5173",
         "http://localhost:5173",
     }
-    for env_name in ("ALLOWED_ORIGINS", "CORS_ORIGINS"):
-        for item in os.getenv(env_name, "").split(","):
-            clean_item = item.strip()
-            if clean_item:
-                origins.add(clean_item)
+    for item in RUNTIME_CONFIG.configured_origins:
+        origins.add(item)
     vercel_url = os.getenv("VERCEL_URL", "").strip()
     if vercel_url:
         origins.add(f"https://{vercel_url}")
@@ -130,7 +129,10 @@ def _get_allowed_origins() -> list[str]:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialize_database()
-    yield
+    try:
+        yield
+    finally:
+        close_pool()
 
 
 app = FastAPI(title="Monitor Spese API", version="1.0.0", lifespan=lifespan)
@@ -149,7 +151,7 @@ def _is_local_hostname(hostname: str | None) -> bool:
 
 
 def _should_use_secure_cookie(request: Request) -> bool:
-    override = os.getenv("MONITOR_SPESE_COOKIE_SECURE", "").strip().lower()
+    override = RUNTIME_CONFIG.cookie_secure_override.lower()
     if override in {"1", "true", "yes", "on"}:
         return True
     if override in {"0", "false", "no", "off"}:
@@ -173,12 +175,7 @@ def _delete_session_cookie(response: Response, request: Request) -> None:
 
 
 def _get_session_secret() -> str:
-    secret = os.getenv("SESSION_SECRET", "").strip()
-    if secret:
-        return secret
-    if os.getenv("VERCEL") or os.getenv("APP_ENV", "").strip().lower() == "production":
-        raise RuntimeError("SESSION_SECRET non impostata. Configurala prima del deploy in produzione.")
-    return "robocount-dev-session-secret"
+    return RUNTIME_CONFIG.session_secret
 
 
 def _encode_session_token(user: dict) -> str:

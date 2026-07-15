@@ -22,15 +22,13 @@ transaction, porta 6543).
 
 from __future__ import annotations
 
-import os
 import re
 
 import psycopg
 from psycopg.rows import tuple_row
 from psycopg_pool import ConnectionPool
 
-
-DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+from backend.config import get_runtime_config
 
 
 # ---------------------------------------------------------------------------
@@ -179,19 +177,51 @@ class Connection:
 _pool: ConnectionPool | None = None
 
 
+def _sanitize_connection_error(exc: Exception) -> RuntimeError:
+    message = str(exc).lower()
+    if "password authentication failed" in message or "authentication failed" in message or "ecircuitbreaker" in message:
+        return RuntimeError(
+            "Connessione al database fallita: credenziali PostgreSQL non valide. "
+            "Verifica la DATABASE_URL configurata."
+        )
+    if "could not translate host name" in message or "name or service not known" in message:
+        return RuntimeError(
+            "Connessione al database fallita: host PostgreSQL non raggiungibile. "
+            "Verifica la DATABASE_URL configurata."
+        )
+    if "connection refused" in message or "timeout" in message:
+        return RuntimeError(
+            "Connessione al database fallita: il database Supabase non e raggiungibile. "
+            "Verifica rete, progetto Supabase e DATABASE_URL."
+        )
+    return RuntimeError(
+        "Connessione al database fallita. Verifica DATABASE_URL e raggiungibilita del database."
+    )
+
+
 def _get_pool() -> ConnectionPool:
     global _pool
     if _pool is None:
-        if not DATABASE_URL:
-            raise RuntimeError(
-                "DATABASE_URL non impostata. Configura la stringa di connessione "
-                "PostgreSQL di Supabase nella variabile d'ambiente DATABASE_URL."
+        runtime_config = get_runtime_config(require_database=True, require_session_secret=False)
+        try:
+            validation_connection = psycopg.connect(
+                runtime_config.database_url,
+                connect_timeout=10,
+                prepare_threshold=None,
             )
-        _pool = ConnectionPool(
-            conninfo=DATABASE_URL,
+        except Exception as exc:
+            raise _sanitize_connection_error(exc) from None
+        else:
+            validation_connection.close()
+
+        pool = ConnectionPool(
+            conninfo=runtime_config.database_url,
             min_size=1,
             max_size=8,
             max_idle=60,
+            timeout=10.0,
+            reconnect_timeout=5.0,
+            open=False,
             kwargs={
                 "row_factory": _row_factory,
                 "autocommit": False,
@@ -199,8 +229,13 @@ def _get_pool() -> ConnectionPool:
                 # transaction: niente prepared statement.
                 "prepare_threshold": None,
             },
-            open=True,
         )
+        try:
+            pool.open(wait=True, timeout=10.0)
+        except Exception as exc:
+            pool.close()
+            raise _sanitize_connection_error(exc) from None
+        _pool = pool
     return _pool
 
 
@@ -209,6 +244,14 @@ def get_connection() -> Connection:
     pool = _get_pool()
     raw = pool.getconn()
     return Connection(raw, pool)
+
+
+def close_pool() -> None:
+    global _pool
+    if _pool is None:
+        return
+    _pool.close()
+    _pool = None
 
 
 # ---------------------------------------------------------------------------
