@@ -7,8 +7,6 @@ import { UltimiMovimentiCard } from "../components/UltimiMovimentiCard";
 import { useAuth } from "../context/AuthContext";
 import { useDashboardSummaryQuery } from "../hooks/useAppData";
 import { getRobotAvatar } from "../utils/avatars";
-import loginRobot from "../assets/login-robot-optimized.png";
-import signupRobot from "../assets/signup-robot-optimized.png";
 import {
   ExpenseForm,
   buildExpensePayload,
@@ -257,6 +255,9 @@ export function HomePage() {
     () => buildHomeBalanceView(homeSummary.coupleBalance, partnerUser?.username || "Partner"),
     [homeSummary.coupleBalance, partnerUser],
   );
+  const userRobotAvatar = getRobotAvatar(user?.avatar_id || user?.avatarId);
+  const partnerRobotAvatar = getRobotAvatar(partnerUser?.avatar_id || partnerUser?.avatarId || "3");
+  const supportRobotAvatar = getRobotAvatar(isPersonalAccount ? "6" : "7");
   const monthTrendRows = useMemo(
     () => (
       allExpenses.length || allIncomes.length
@@ -318,7 +319,7 @@ export function HomePage() {
           onClick={() => setSelectedCoupleMember(user?.username || "")}
           aria-label="Apri anteprima profilo"
         >
-          <img src={getRobotAvatar(user?.avatar_id || user?.avatarId).src} alt="" loading="eager" />
+          <img src={userRobotAvatar.src} alt="" loading="eager" />
         </button>
         <div className="home-robot-copy">
           <span>{balanceView.label}</span>
@@ -334,8 +335,8 @@ export function HomePage() {
           </div>
         </div>
         <div className="home-robot-illustrations" aria-hidden="true">
-          <img src={loginRobot} alt="" loading="lazy" />
-          <img src={signupRobot} alt="" loading="lazy" />
+          <img src={partnerRobotAvatar.src} alt="" loading="lazy" />
+          <img src={supportRobotAvatar.src} alt="" loading="lazy" />
         </div>
         {isPageBootstrapping ? <span className="home-robot-refresh" aria-label="Dati in aggiornamento" /> : null}
       </section>

@@ -25,8 +25,9 @@ const navigation = [
   { to: "/report", label: "Report", icon: ReportIcon },
   { to: "/calendar", label: "Calendario", icon: CalendarIcon },
   { to: "/couple-balance", label: "Saldo di coppia", icon: CoupleIcon },
-  { to: "/profile", label: "Profilo", icon: ProfileIcon },
 ];
+
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "robocount:sidebar-collapsed";
 
 function getCategoryName(category) {
   return typeof category === "string" ? category : category?.name || category?.label || category?.categoryName || "";
@@ -42,6 +43,9 @@ export function AppShell() {
   const [isIncomeDialogOpen, setIsIncomeDialogOpen] = useState(false);
   const [isAddChoiceOpen, setIsAddChoiceOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => (
+    typeof window !== "undefined" && window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "1"
+  ));
   const [expenseMeta, setExpenseMeta] = useState(null);
   const [expenseForm, setExpenseForm] = useState(createDefaultExpenseForm("", "couple"));
   const [incomeForm, setIncomeForm] = useState(createDefaultIncomeForm());
@@ -86,6 +90,47 @@ export function AppShell() {
   );
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, isSidebarCollapsed ? "1" : "0");
+  }, [isSidebarCollapsed]);
+
+  useEffect(() => {
+    const preloadPages = () => {
+      Promise.allSettled([
+        import("../pages/HomePage"),
+        import("../pages/ExpensesPage"),
+        import("../pages/IncomesPage"),
+        import("../pages/SavingsPage"),
+        import("../pages/ReportPage"),
+        import("../pages/CalendarPage"),
+        import("../pages/ProfilePage"),
+        import("../pages/CoupleBalancePage"),
+        user?.is_admin ? import("../pages/AdminUsersPage") : Promise.resolve(),
+      ]);
+    };
+    const idleHandle = typeof window !== "undefined" && "requestIdleCallback" in window
+      ? window.requestIdleCallback(preloadPages, { timeout: 1800 })
+      : window.setTimeout(preloadPages, 350);
+
+    return () => {
+      if (typeof window !== "undefined" && "cancelIdleCallback" in window && typeof idleHandle === "number") {
+        window.cancelIdleCallback(idleHandle);
+        return;
+      }
+      window.clearTimeout(idleHandle);
+    };
+  }, [user?.is_admin]);
+
+  useEffect(() => {
+    if (!isSearchOpen) {
+      return;
+    }
+    window.requestAnimationFrame(() => searchInputRef.current?.focus());
+  }, [isSearchOpen]);
+
+  useEffect(() => {
     function handlePointerDown(event) {
       if (!profileMenuRef.current?.contains(event.target)) {
         setIsProfileMenuOpen(false);
@@ -110,7 +155,6 @@ export function AppShell() {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         setIsSearchOpen(true);
-        searchInputRef.current?.focus();
       }
     }
 
@@ -172,6 +216,14 @@ export function AppShell() {
     }
 
     await openExpenseDialog();
+  }
+
+  function handleSidebarToggle() {
+    if (typeof window !== "undefined" && window.matchMedia("(max-width: 900px)").matches) {
+      setIsSidebarOpen(true);
+      return;
+    }
+    setIsSidebarCollapsed((current) => !current);
   }
 
   function handleTopbarSearchKeyDown(event) {
@@ -331,7 +383,7 @@ export function AppShell() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${isSidebarCollapsed ? " is-sidebar-collapsed" : ""}`}>
       <div
         className={`sidebar-backdrop${isSidebarOpen ? " active" : ""}`}
         onClick={() => setIsSidebarOpen(false)}
@@ -358,31 +410,74 @@ export function AppShell() {
                 to={item.to}
                 className={({ isActive }) => `sidebar__nav-link${isActive ? " active" : ""}`}
                 onClick={() => setIsSidebarOpen(false)}
+                aria-label={item.label}
               >
                 <Icon />
                 <span>{item.label}</span>
               </NavLink>
             );
           })}
-          {user?.is_admin ? (
-            <NavLink
-              to="/admin/users"
-              className={({ isActive }) => `sidebar__nav-link${isActive ? " active" : ""}`}
-              onClick={() => setIsSidebarOpen(false)}
-            >
-              <AdminIcon />
-              <span>Admin</span>
-            </NavLink>
-          ) : null}
         </nav>
 
-        <div className="sidebar__footer">
-          <ProfileAvatar user={user} className="sidebar__footer-avatar" />
-          <div className="sidebar__footer-copy">
-            <strong>{user?.full_name || user?.username || "Utente"}</strong>
-            <span>{user?.is_admin ? "Amministratore" : "@".concat(user?.username || "-")}</span>
+        <div className="sidebar__footer-menu" ref={profileMenuRef}>
+          <button
+            type="button"
+            className={`sidebar__footer${isProfileMenuOpen ? " active" : ""}`}
+            onClick={() => setIsProfileMenuOpen((current) => !current)}
+            aria-label="Apri menu profilo"
+            aria-expanded={isProfileMenuOpen}
+          >
+            <ProfileAvatar user={user} className="sidebar__footer-avatar" />
+            <span className="sidebar__footer-copy">
+              <strong>{user?.full_name || user?.username || "Utente"}</strong>
+              <span>{user?.is_admin ? "Amministratore" : "@".concat(user?.username || "-")}</span>
+            </span>
+          </button>
+
+          {isProfileMenuOpen ? (
+            <div className="sidebar__profile-popover" role="menu" aria-label="Menu profilo">
+              <div className="sidebar__profile-card">
+                <ProfileAvatar user={user} className="sidebar__profile-avatar" />
+                <span>
+                  <strong>{user?.full_name || "Utente"}</strong>
+                  <small>@{user?.username || "-"}</small>
+                </span>
+              </div>
+              <button
+                type="button"
+                className="sidebar__profile-item"
+                onClick={() => {
+                  setIsProfileMenuOpen(false);
+                  navigate("/profile");
+                }}
+              >
+                <ProfileIcon />
+                <span>Profilo</span>
+              </button>
+              {user?.is_admin ? (
+                <button
+                  type="button"
+                  className="sidebar__profile-item"
+                  onClick={() => {
+                    setIsProfileMenuOpen(false);
+                    navigate("/admin/users");
+                  }}
+                >
+                  <AdminIcon />
+                  <span>Admin</span>
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="sidebar__profile-item sidebar__profile-item--danger"
+                onClick={handleLogout}
+              >
+                <LogoutIcon />
+                <span>Logout</span>
+              </button>
+            </div>
+          ) : null}
           </div>
-        </div>
       </aside>
 
       <div className="shell-content">
@@ -392,58 +487,59 @@ export function AppShell() {
               <button
                 type="button"
                 className="top-shell__menu-button"
-                onClick={() => setIsSidebarOpen(true)}
-                aria-label="Apri menu laterale"
+                onClick={handleSidebarToggle}
+                aria-label="Apri o comprimi menu laterale"
               >
                 <MenuIcon />
               </button>
 
-              <button
-                type="button"
-                className="top-shell__brand-trigger"
-                onClick={() => navigate("/home")}
-                aria-label="Torna alla home"
-              >
-                <span className="top-shell__brand-mark">
-                  <BrandIcon />
-                </span>
-                <span className="top-shell__brand-text">
-                  <strong>RoboCount</strong>
-                </span>
-              </button>
-
-              <label className={`top-shell__search${isSearchOpen ? " is-open" : ""}`} aria-label="Cerca o vai a una sezione">
-                <SearchIcon />
-                <input
-                  ref={searchInputRef}
-                  type="search"
-                  placeholder="Cerca spese, entrate, categorie..."
-                  value={globalSearch}
-                  onChange={(event) => {
-                    setGlobalSearch(event.target.value);
-                    setIsSearchOpen(true);
-                  }}
-                  onFocus={() => setIsSearchOpen(true)}
-                  onKeyDown={handleTopbarSearchKeyDown}
-                />
-                <kbd>Cmd K</kbd>
-                {isSearchOpen && globalSearch.trim() ? (
-                  <div className="top-shell__search-popover" role="listbox" aria-label="Risultati ricerca globale">
-                    {globalSearchResults.length ? (
-                      globalSearchResults.map((result) => (
-                        <button key={`${result.type}-${result.id}`} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => openSearchResult(result)}>
-                          <span>{result.label}</span>
-                          <small>{result.meta}</small>
-                        </button>
-                      ))
-                    ) : (
-                      <p>Nessun risultato in cache. Apri una sezione per renderla ricercabile.</p>
-                    )}
-                  </div>
-                ) : null}
-              </label>
+              <span className="top-shell__spacer" aria-hidden="true" />
 
               <div className="top-shell__right">
+                <div className="top-shell__search-menu">
+                  <button
+                    type="button"
+                    className={`top-shell__icon-button top-shell__search-button${isSearchOpen ? " active" : ""}`}
+                    onClick={() => setIsSearchOpen((current) => !current)}
+                    aria-label="Apri ricerca"
+                    aria-expanded={isSearchOpen}
+                  >
+                    <SearchIcon />
+                  </button>
+
+                  {isSearchOpen ? (
+                    <div className="top-shell__search-popover" role="search" aria-label="Cerca o vai a una sezione">
+                      <label className="top-shell__search-field">
+                        <SearchIcon />
+                        <input
+                          ref={searchInputRef}
+                          type="search"
+                          placeholder="Cerca spese, entrate, categorie..."
+                          value={globalSearch}
+                          onChange={(event) => setGlobalSearch(event.target.value)}
+                          onKeyDown={handleTopbarSearchKeyDown}
+                        />
+                        <kbd>Cmd K</kbd>
+                      </label>
+                      {globalSearch.trim() ? (
+                        <div className="top-shell__search-results" role="listbox" aria-label="Risultati ricerca globale">
+                          {globalSearchResults.length ? (
+                            globalSearchResults.map((result) => (
+                              <button key={`${result.type}-${result.id}`} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => openSearchResult(result)}>
+                                <span>{result.label}</span>
+                                <small>{result.meta}</small>
+                              </button>
+                            ))
+                          ) : (
+                            <p>Nessun risultato in cache. Apri una sezione per renderla ricercabile.</p>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="top-shell__search-hint">Cerca una pagina, una spesa o una categoria. Scorciatoia: Cmd K.</p>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
                 <ThemeToggle theme={theme} setTheme={setTheme} />
                 <button
                   type="button"
@@ -453,44 +549,6 @@ export function AppShell() {
                 >
                   <PlusIcon />
                 </button>
-
-                <div className="top-shell__profile-menu" ref={profileMenuRef}>
-                  <button
-                    type="button"
-                    className={`top-shell__avatar-button${isProfileMenuOpen ? " active" : ""}`}
-                    onClick={() => setIsProfileMenuOpen((current) => !current)}
-                    aria-label="Apri menu profilo"
-                    aria-expanded={isProfileMenuOpen}
-                  >
-                    <ProfileAvatar user={user} className="top-shell__profile-avatar" />
-                  </button>
-
-                  {isProfileMenuOpen ? (
-                    <div className="top-shell__profile-popover" role="menu" aria-label="Menu profilo">
-                      <div className="top-shell__profile-card">
-                        <span className="top-shell__profile-name">{user?.full_name || "Utente"}</span>
-                        <span className="top-shell__profile-meta">@{user?.username || "-"}</span>
-                      </div>
-                      <button
-                        type="button"
-                        className="top-shell__profile-item"
-                        onClick={() => {
-                          setIsProfileMenuOpen(false);
-                          navigate("/profile");
-                        }}
-                      >
-                        Profilo
-                      </button>
-                      <button
-                        type="button"
-                        className="top-shell__profile-item"
-                        onClick={handleLogout}
-                      >
-                        Logout
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
               </div>
             </div>
           </div>
@@ -701,6 +759,16 @@ function SearchIcon() {
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <circle cx="10.75" cy="10.75" r="5.75" />
       <path d="m15.25 15.25 4 4" />
+    </svg>
+  );
+}
+
+function LogoutIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M10.5 5.5H6.75A1.75 1.75 0 0 0 5 7.25v9.5a1.75 1.75 0 0 0 1.75 1.75h3.75" />
+      <path d="M13.5 8.25 17.25 12l-3.75 3.75" />
+      <path d="M9.5 12h7.5" />
     </svg>
   );
 }
